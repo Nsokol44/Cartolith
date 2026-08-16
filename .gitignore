@@ -1,0 +1,21 @@
+# Frontend
+frontend/node_modules/
+frontend/dist/
+
+# Backend
+backend/.venv/
+backend/__pycache__/
+**/__pycache__/
+*.pyc
+
+# Desktop build output
+desktop/build/
+desktop/dist/
+.build-venv/
+
+# Logs (regenerated on every run, no reason to commit)
+*.log
+
+# OS cruft
+.DS_Store
+__MACOSX/

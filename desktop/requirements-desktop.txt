@@ -1,0 +1,10 @@
+# Install alongside backend/requirements.txt (Cartolith desktop build):
+#   pip install -r backend/requirements.txt -r desktop/requirements-desktop.txt
+pywebview>=5.2
+pyinstaller>=6.10.0
+
+# pywebview needs a platform webview backend:
+#   Windows -> uses the built-in Edge WebView2 runtime (pre-installed on Win 10/11)
+#   macOS   -> uses the built-in WKWebView (nothing extra to install)
+#   Linux   -> needs GTK + WebKitGTK, e.g. on Ubuntu/Debian:
+#              sudo apt-get install python3-gi gir1.2-webkit2-4.1 gir1.2-gtk-3.0
