@@ -17,6 +17,10 @@ block_cipher = None
 # similar, even though it imports fine when run from source.
 # ---------------------------------------------------------------------
 COLLECT_ALL_PACKAGES = [
+    "fastapi",
+    "starlette",
+    "pydantic",
+    "pandas",
     "fiona",
     "rasterio",
     "pyproj",
@@ -55,6 +59,12 @@ hiddenimports += [
     "uvicorn.protocols.http.auto",
     "uvicorn.protocols.websockets.auto",
     "uvicorn.lifespan.on",
+    "fastapi.middleware.cors",
+    "fastapi.responses",
+    "fastapi.staticfiles",
+    "starlette.middleware.cors",
+    "starlette.responses",
+    "starlette.staticfiles",
 ]
 
 a = Analysis(
