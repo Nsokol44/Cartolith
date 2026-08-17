@@ -55,9 +55,6 @@ hiddenimports += [
     "uvicorn.protocols.http.auto",
     "uvicorn.protocols.websockets.auto",
     "uvicorn.lifespan.on",
-    "webview.platforms.cocoa",   # macOS
-    "webview.platforms.winforms",  # Windows
-    "webview.platforms.gtk",     # Linux
 ]
 
 a = Analysis(
@@ -84,7 +81,11 @@ exe = EXE(
     debug=False,
     strip=False,
     upx=False,
-    console=False,          # no terminal window
+    # Show a console window: with no native app window (we open the
+    # browser instead), this is the only thing a student can close to
+    # quit the local server. It also prints the URL if the browser
+    # tab gets closed by accident.
+    console=True,
     icon=None,               # drop an .ico/.icns here once you have one
 )
 

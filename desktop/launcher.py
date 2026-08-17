@@ -7,17 +7,18 @@ Single entry point that:
      that SAME app, so everything is served from one origin/one port --
      no separate Vite dev server, no CORS, no proxy needed.
   3. Runs uvicorn in a background thread.
-  4. Opens a native OS window (pywebview) pointed at that local server.
+  4. Opens the user's default browser pointed at that local server.
 
 This is what PyInstaller bundles into the double-click executable.
-Students never see a terminal, a browser tab, or a port number.
+Students see a terminal-less background process and their normal browser
+opens a tab -- no native window toolkit (pywebview) involved at all.
 """
 import os
 import sys
 import threading
 import time
 import socket
-import webview
+import webbrowser
 import uvicorn
 
 # ---------------------------------------------------------------------
@@ -79,14 +80,17 @@ def main():
         except OSError:
             time.sleep(0.1)
 
-    webview.create_window(
-        "Cartolith",
-        url,
-        width=1400,
-        height=900,
-        min_size=(1000, 700),
-    )
-    webview.start()
+    webbrowser.open(url)
+
+    print(f"[launcher] Cartolith is running at {url}")
+    print("[launcher] Close this window / press Ctrl+C to stop the server.")
+
+    # No native window to hold the process open (we're just a background
+    # server now), so block on the server thread instead.
+    try:
+        server_thread.join()
+    except KeyboardInterrupt:
+        pass
 
 
 if __name__ == "__main__":

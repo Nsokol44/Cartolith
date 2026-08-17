@@ -34,6 +34,23 @@ for the three downloadable zips once it finishes. See `desktop/README.md`
 for how the packaging works and the one thing worth testing before
 handing it to a class (GDAL/PROJ paths on geospatial builds).
 
+### For Mac students
+
+The macOS zip contains **`Cartolith.app`** and **`Install and Run
+Cartolith.command`**. Tell students to double-click the `.command` file
+the *first* time, not the `.app` directly — it clears the "unidentified
+developer" / "damaged" block macOS puts on unsigned downloaded apps,
+then opens the app for them. After that first run, `Cartolith.app` can
+be opened normally.
+
+Launching now opens the app in the student's **default browser** (a
+tab at `http://127.0.0.1:<port>`) instead of a native window. A small
+console window opens alongside it — closing that window stops the
+local server. This is a workaround for not having code-signing set up;
+the actual fix for a fully invisible launch is notarizing the app with
+an Apple Developer account (~$99/yr), which removes the need for the
+`.command` script entirely.
+
 ## What changed from the original DataLens Explorer
 
 "DataLens" → "Cartolith" in every user-facing string (app header,
