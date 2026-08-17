@@ -50,4 +50,3 @@ backwards-compatibility check is added. Ask if you want that.
 No internal logic, variable names, or file structure were changed —
 only user-visible strings, the two format identifiers above, and the
 addition of `desktop/` and `.github/workflows/`.
-# Cartolith
