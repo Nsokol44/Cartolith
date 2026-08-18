@@ -58,6 +58,27 @@ function AppInner() {
       .catch(() => dispatch({ type: "SET_BACKEND", online: false }))
   }, [])
 
+  // Desktop-app auto-shutdown: tells the local Python server "a tab is
+  // still open" every few seconds, and flags "a tab just closed" on
+  // pagehide (covers both tab close and full-page refresh). No-ops
+  // harmlessly if these routes don't exist, e.g. when hosted as a
+  // normal web app instead of run via the desktop launcher.
+  useEffect(() => {
+    const ping = () => fetch("/__heartbeat__", { method: "POST" }).catch(() => {})
+    ping()
+    const interval = setInterval(ping, 4000)
+
+    const onHide = () => {
+      if (navigator.sendBeacon) navigator.sendBeacon("/__closing__")
+    }
+    window.addEventListener("pagehide", onHide)
+
+    return () => {
+      clearInterval(interval)
+      window.removeEventListener("pagehide", onHide)
+    }
+  }, [])
+
   const dsCount = Object.keys(state.datasets).length
   const showWelcome = !welcomeDismissed && dsCount === 0 && state.backendOnline !== false
 
