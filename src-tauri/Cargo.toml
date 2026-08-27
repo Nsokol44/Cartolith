@@ -1,0 +1,26 @@
+[package]
+name = "cartolith"
+version = "1.0.0"
+description = "Cartolith desktop app"
+edition = "2021"
+
+# See https://tauri.app/v1/api/config#build for the build config schema
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-shell = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[[bin]]
+name = "cartolith"
+path = "src/main.rs"
+
+[profile.release]
+panic = "abort"
+codegen-units = 1
+lto = true
+incremental = false
+opt-level = "s"

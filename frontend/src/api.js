@@ -1,6 +1,47 @@
-// All requests go through Vite's proxy (/api → http://localhost:8000)
-// Never hardcode the backend port here — that's what caused the "Not Found" error.
-const BASE = ''   // empty = same origin, proxy handles routing to port 8000
+import { invoke } from '@tauri-apps/api/core'
+
+// In dev mode (`npm run dev`) and in the old same-origin desktop build
+// (desktop/launcher.py), all requests go through Vite's proxy or a
+// same-origin static mount, so an empty BASE (same origin) is correct.
+//
+// In the Tauri build, the frontend is served by the native webview from
+// its own origin (tauri://localhost / https://tauri.localhost) while the
+// backend runs as a separate sidecar process on 127.0.0.1:<port>. In that
+// case BASE gets set to that sidecar's actual address by initBackend()
+// below, which main.jsx calls once before the app renders.
+//
+// Never hardcode the backend port here — that's what caused the
+// "Not Found" error in the original desktop build.
+let BASE = ''
+
+const isTauri = () => typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window
+
+/**
+ * Resolve which backend this app should talk to. Must be awaited before
+ * the very first API call. Safe to call in non-Tauri contexts (no-op).
+ */
+export async function initBackend({ onStatus } = {}) {
+  if (!isTauri()) return BASE // dev server / old desktop build: unchanged
+
+  const port = await invoke('get_backend_port')
+  BASE = `http://127.0.0.1:${port}`
+
+  // The sidecar can take a moment to bind (loading GDAL/PROJ, etc.) —
+  // poll /api/health instead of firing the app's first real request at
+  // a backend that isn't listening yet.
+  const deadline = Date.now() + 30_000
+  while (Date.now() < deadline) {
+    try {
+      const res = await fetch(BASE + '/api/health')
+      if (res.ok) return BASE
+    } catch {
+      // not up yet, keep polling
+    }
+    onStatus?.('Starting Cartolith…')
+    await new Promise((r) => setTimeout(r, 250))
+  }
+  throw new Error('Cartolith backend did not start in time.')
+}
 
 async function request(path, options = {}) {
   let res
@@ -51,7 +92,7 @@ export function uploadWithProgress(file, name, onProgress) {
     if (name) fd.append('name', name)
 
     const xhr = new XMLHttpRequest()
-    xhr.open('POST', '/api/datasets/upload')   // relative — goes through proxy
+    xhr.open('POST', BASE + '/api/datasets/upload')   // relative in dev/proxy, absolute under Tauri
 
     xhr.upload.addEventListener('progress', (e) => {
       if (e.lengthComputable) onProgress?.(Math.round((e.loaded / e.total) * 100))

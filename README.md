@@ -30,26 +30,38 @@ git push origin v1.0
 
 GitHub's own Windows/macOS/Linux runners will each build a native app
 automatically — check the "Actions" tab while it runs, then "Releases"
-for the three downloadable zips once it finishes. See `desktop/README.md`
-for how the packaging works and the one thing worth testing before
-handing it to a class (GDAL/PROJ paths on geospatial builds).
+for the downloadable zips once it finishes.
+
+There are **two packaging pipelines** in this repo, both wired up to
+build on every tagged push:
+
+- **`desktop-tauri/` + `.github/workflows/build-tauri.yml` (recommended).**
+  A real native app window (dock icon, no browser tab, no console
+  window) built with [Tauri](https://tauri.app). See
+  `desktop-tauri/README.md` — including an honest note on what this does
+  and doesn't fix about the macOS "not verified" message.
+- **`desktop/` + `.github/workflows/build-desktop.yml` (older, still
+  works).** Opens the app in the student's default browser instead of a
+  native window. See `desktop/README.md`.
+
+If you don't need both, delete whichever `desktop*` folder and workflow
+file you don't want and the other keeps working on its own.
 
 ### For Mac students
 
-The macOS zip contains **`Cartolith.app`** and **`Install and Run
-Cartolith.command`**. Tell students to double-click the `.command` file
-the *first* time, not the `.app` directly — it clears the "unidentified
-developer" / "damaged" block macOS puts on unsigned downloaded apps,
-then opens the app for them. After that first run, `Cartolith.app` can
-be opened normally.
+Both pipelines ship a **`Cartolith.app`** plus an **`Install and Run
+Cartolith.command`** helper in the macOS zip. Tell students to
+double-click the `.command` file the *first* time, not the `.app`
+directly — it clears the quarantine flag macOS puts on unsigned apps
+downloaded from the internet (the thing behind the "can't be opened
+because it is not verified" / "is damaged" message). After that first
+run, `Cartolith.app` can be opened normally.
 
-Launching now opens the app in the student's **default browser** (a
-tab at `http://127.0.0.1:<port>`) instead of a native window. A small
-console window opens alongside it — closing that window stops the
-local server. This is a workaround for not having code-signing set up;
-the actual fix for a fully invisible launch is notarizing the app with
-an Apple Developer account (~$99/yr), which removes the need for the
-`.command` script entirely.
+Neither pipeline makes that message disappear on its own — that requires
+a paid Apple Developer account ($99/yr) for code signing + notarization.
+The `.command` workaround is the free alternative. See
+`desktop-tauri/README.md` for the full explanation and how to set up
+notarization if you want to remove this step entirely.
 
 ## What changed from the original DataLens Explorer
 
