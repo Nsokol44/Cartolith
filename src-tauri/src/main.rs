@@ -110,10 +110,7 @@ fn main() {
         .on_window_event(|window, event| {
             // Kill the backend the moment the (only) window is closed, so
             // nothing lingers in the background after a student quits.
-            if let tauri::WindowEvent::Destroyed = event {
-                let state = window.state::<BackendState>();
-                if let Some(mut child) = state.child.lock().unwrap().take() {
-                    let _ = child.kill();
+            if let tauri::WindowEvent::Destroyed = event { let state = window.state::<BackendState>(); if let Some(mut child) = state.child.lock().unwrap().take() { let _ = child.kill(); } } ``` Replace it with: ```rust if let tauri::WindowEvent::Destroyed = event { let state = window.state::<BackendState>(); let child_opt = state.child.lock().unwrap().take(); if let Some(mut child) = child_opt { let _ = child.kill(); } }
                 }
             }
         })
