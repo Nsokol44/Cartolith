@@ -1,0 +1,164 @@
+name: Build Cartolith Desktop App (Tauri)
+
+# Builds a native double-click Cartolith app for Windows, macOS, and Linux
+# on every push to main, and attaches the results to a GitHub Release
+# when you push a version tag like "v1.0". Each OS builds its own native
+# app on its own real GitHub-hosted runner -- this is the only practical
+# way to get a real macOS build without a Mac and a real Windows
+# installer without a Windows machine.
+#
+# Check the "Actions" tab while a run is in progress; check "Releases"
+# for the downloadable files once it finishes (only for tag pushes --
+# pushes to `main` just build and upload workflow artifacts so you can
+# sanity-check a build before cutting a release).
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  workflow_dispatch: {}
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            triple: x86_64-pc-windows-msvc
+            artifact_name: Cartolith-windows
+          # Two separate macOS builds because PyInstaller can't cross-compile:
+          # each sidecar has to be built on a real runner of that CPU
+          # architecture. Give the "apple-silicon" zip to any Mac from 2020
+          # onward (M1/M2/M3/M4); the "intel" zip to older Macs. If a
+          # student isn't sure, System Settings → General → About → "Chip"
+          # (or "Processor") tells you: "Apple M___" = apple-silicon,
+          # anything saying "Intel" = intel.
+          - os: macos-14
+            triple: aarch64-apple-darwin
+            artifact_name: Cartolith-macos-apple-silicon
+          - os: macos-13
+            triple: x86_64-apple-darwin
+            artifact_name: Cartolith-macos-intel
+          - os: ubuntu-latest
+            triple: x86_64-unknown-linux-gnu
+            artifact_name: Cartolith-linux
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.triple }}
+
+      - name: Install Linux system dependencies (Tauri + webview)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            build-essential \
+            curl \
+            wget \
+            file \
+            libxdo-dev \
+            libssl-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            patchelf
+
+      # ---- Frontend --------------------------------------------------
+      - name: Build frontend
+        working-directory: frontend
+        run: |
+          npm ci
+          npm run build
+
+      # ---- Backend sidecar (PyInstaller) ------------------------------
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r backend/requirements.txt pyinstaller
+
+      - name: Build backend sidecar
+        working-directory: desktop-tauri
+        run: pyinstaller backend.spec --noconfirm
+
+      - name: Rename sidecar with target triple (Unix)
+        if: runner.os != 'Windows'
+        run: |
+          mkdir -p src-tauri/binaries
+          cp desktop-tauri/dist/cartolith-backend "src-tauri/binaries/cartolith-backend-${{ matrix.triple }}"
+          chmod +x "src-tauri/binaries/cartolith-backend-${{ matrix.triple }}"
+
+      - name: Rename sidecar with target triple (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path src-tauri/binaries | Out-Null
+          Copy-Item "desktop-tauri/dist/cartolith-backend.exe" "src-tauri/binaries/cartolith-backend-${{ matrix.triple }}.exe"
+
+      # ---- Tauri shell --------------------------------------------------
+      - name: Generate app icons
+        run: npx --yes @tauri-apps/cli@2 icon src-tauri/icons/app-icon.png
+
+      - name: Build Tauri app
+        run: npx --yes @tauri-apps/cli@2 build --target ${{ matrix.triple }}
+        env:
+          # No paid Apple Developer certificate configured -- Tauri will
+          # ad-hoc sign the macOS app automatically, which is enough to
+          # satisfy Apple Silicon's "must be signed to run at all"
+          # requirement but NOT enough to avoid the Gatekeeper
+          # "not verified" prompt on first launch (that requires paid
+          # notarization). The bundled "Install and Run Cartolith.command"
+          # helper works around this for free -- see desktop-tauri/README.md.
+          CI: true
+
+      # ---- Package for students ------------------------------------------
+      - name: Package macOS build
+        if: runner.os == 'macOS'
+        working-directory: src-tauri/target/${{ matrix.triple }}/release/bundle/macos
+        run: |
+          cp "$GITHUB_WORKSPACE/desktop-tauri/Install and Run Cartolith.command" .
+          chmod +x "Install and Run Cartolith.command"
+          zip -r "${{ matrix.artifact_name }}.zip" "Cartolith.app" "Install and Run Cartolith.command"
+
+      - name: Package Linux build
+        if: runner.os == 'Linux'
+        working-directory: src-tauri/target/${{ matrix.triple }}/release/bundle
+        run: |
+          mkdir -p out
+          [ -d appimage ] && cp appimage/*.AppImage out/ || true
+          [ -d deb ] && cp deb/*.deb out/ || true
+          cd out && zip -r "../${{ matrix.artifact_name }}.zip" .
+
+      - name: Package Windows build
+        if: runner.os == 'Windows'
+        shell: pwsh
+        working-directory: src-tauri/target/${{ matrix.triple }}/release/bundle
+        run: |
+          New-Item -ItemType Directory -Force -Path out | Out-Null
+          if (Test-Path msi) { Copy-Item msi/*.msi out/ }
+          if (Test-Path nsis) { Copy-Item nsis/*.exe out/ }
+          Compress-Archive -Path out/* -DestinationPath "../${{ matrix.artifact_name }}.zip"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact_name }}
+          path: src-tauri/target/${{ matrix.triple }}/release/bundle/${{ matrix.artifact_name }}.zip
+
+      - name: Attach to release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: src-tauri/target/${{ matrix.triple }}/release/bundle/${{ matrix.artifact_name }}.zip
