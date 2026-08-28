@@ -126,6 +126,7 @@ jobs:
 
       # ---- Package for students ------------------------------------------
       - name: List what Tauri actually produced (debug)
+        shell: bash
         run: |
           echo "--- bundle directory contents ---"
           find src-tauri/target/${{ matrix.triple }}/release/bundle -maxdepth 3 || echo "bundle directory does not exist at all"
