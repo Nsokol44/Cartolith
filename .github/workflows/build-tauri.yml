@@ -20,11 +20,6 @@ on:
 
 jobs:
   build:
-    # Cartolith bundles a full scientific-geospatial Python stack (GDAL,
-    # rasterio, fiona, geopandas...) into the sidecar on top of the Rust
-    # compile -- a cold-cache build legitimately takes a while. This is a
-    # safety net against a genuinely stuck build (e.g. a hung network
-    # download), not a target time.
     timeout-minutes: 90
     permissions:
       contents: write
@@ -35,22 +30,17 @@ jobs:
           - os: windows-latest
             triple: x86_64-pc-windows-msvc
             artifact_name: Cartolith-windows
-          # Two separate macOS builds because PyInstaller can't cross-compile:
-          # each sidecar has to be built on a real runner of that CPU
-          # architecture. Give the "apple-silicon" zip to any Mac from 2020
-          # onward (M1/M2/M3/M4); the "intel" zip to older Macs. If a
-          # student isn't sure, System Settings → General → About → "Chip"
-          # (or "Processor") tells you: "Apple M___" = apple-silicon,
-          # anything saying "Intel" = intel.
           - os: macos-14
             triple: aarch64-apple-darwin
             artifact_name: Cartolith-macos-apple-silicon
           - os: macos-13
             triple: x86_64-apple-darwin
             artifact_name: Cartolith-macos-intel
-          - os: ubuntu-latest
-            triple: x86_64-unknown-linux-gnu
-            artifact_name: Cartolith-linux
+          # Linux temporarily disabled to speed up turnaround while under
+          # time pressure -- re-add this block to bring it back:
+          # - os: ubuntu-latest
+          #   triple: x86_64-unknown-linux-gnu
+          #   artifact_name: Cartolith-linux
     runs-on: ${{ matrix.os }}
 
     steps:
@@ -73,11 +63,6 @@ jobs:
         with:
           targets: ${{ matrix.triple }}
 
-      # Caches ~/.cargo and src-tauri/target keyed on Cargo.lock, so
-      # unchanged Rust dependencies don't get re-downloaded/recompiled on
-      # every run -- this is what made the crates.io download hang from
-      # earlier possible to hit at all, and it's the main thing that makes
-      # repeat builds slow.
       - name: Cache Rust build
         uses: Swatinem/rust-cache@v2
         with:
@@ -137,16 +122,14 @@ jobs:
       - name: Build Tauri app
         run: npx --yes @tauri-apps/cli@2 build --target ${{ matrix.triple }}
         env:
-          # No paid Apple Developer certificate configured -- Tauri will
-          # ad-hoc sign the macOS app automatically, which is enough to
-          # satisfy Apple Silicon's "must be signed to run at all"
-          # requirement but NOT enough to avoid the Gatekeeper
-          # "not verified" prompt on first launch (that requires paid
-          # notarization). The bundled "Install and Run Cartolith.command"
-          # helper works around this for free -- see desktop-tauri/README.md.
           CI: true
 
       # ---- Package for students ------------------------------------------
+      - name: List what Tauri actually produced (debug)
+        run: |
+          echo "--- bundle directory contents ---"
+          find src-tauri/target/${{ matrix.triple }}/release/bundle -maxdepth 3 || echo "bundle directory does not exist at all"
+
       - name: Package macOS build
         if: runner.os == 'macOS'
         working-directory: src-tauri/target/${{ matrix.triple }}/release/bundle/macos
