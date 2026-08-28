@@ -20,7 +20,12 @@ on:
 
 jobs:
   build:
-    timeout-minutes: 45
+    # Cartolith bundles a full scientific-geospatial Python stack (GDAL,
+    # rasterio, fiona, geopandas...) into the sidecar on top of the Rust
+    # compile -- a cold-cache build legitimately takes a while. This is a
+    # safety net against a genuinely stuck build (e.g. a hung network
+    # download), not a target time.
+    timeout-minutes: 90
     permissions:
       contents: write
     strategy:
@@ -54,15 +59,29 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: "20"
+          cache: "npm"
+          cache-dependency-path: frontend/package-lock.json
 
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
+          cache: "pip"
+          cache-dependency-path: backend/requirements.txt
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.triple }}
+
+      # Caches ~/.cargo and src-tauri/target keyed on Cargo.lock, so
+      # unchanged Rust dependencies don't get re-downloaded/recompiled on
+      # every run -- this is what made the crates.io download hang from
+      # earlier possible to hit at all, and it's the main thing that makes
+      # repeat builds slow.
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
 
       - name: Install Linux system dependencies (Tauri + webview)
         if: runner.os == 'Linux'
