@@ -29,7 +29,7 @@ export async function initBackend({ onStatus } = {}) {
   // The sidecar can take a moment to bind (loading GDAL/PROJ, etc.) —
   // poll /api/health instead of firing the app's first real request at
   // a backend that isn't listening yet.
-  const deadline = Date.now() + 30_000
+  const deadline = Date.now() + 120_000
   while (Date.now() < deadline) {
     try {
       const res = await fetch(BASE + '/api/health')
