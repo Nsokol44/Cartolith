@@ -1,7 +1,0 @@
-# Install alongside backend/requirements.txt (Cartolith desktop build):
-#   pip install -r backend/requirements.txt -r desktop/requirements-desktop.txt
-pyinstaller>=6.10.0
-
-# No native webview toolkit needed -- launcher.py starts the local FastAPI
-# server and opens the user's default OS browser at http://127.0.0.1:<port>
-# instead of a pywebview window. Nothing extra to install on any platform.

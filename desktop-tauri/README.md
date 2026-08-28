@@ -21,9 +21,14 @@ changed:
   mode (`npm run dev`) this is a no-op — nothing about your normal dev
   workflow changes.
 
-The old `desktop/` folder (PyInstaller + pywebview/browser-tab approach)
-is left in place and still works if you ever want it, but `desktop-tauri/`
-+ `.github/workflows/build-tauri.yml` is now the recommended path.
+This is the only packaging pipeline in the repo now — an earlier
+PyInstaller + browser-tab approach (`desktop/` +
+`.github/workflows/build-desktop.yml`) has been removed. It's what
+produced the confusingly-similar `Cartolith-macos.zip` (no
+architecture suffix, no bundled `.command` helper) if you ever
+downloaded that from an older release — this pipeline's macOS zips are
+named `Cartolith-macos-apple-silicon.zip` / `Cartolith-macos-intel.zip`
+and do include the helper.
 
 ## Getting installers for students
 

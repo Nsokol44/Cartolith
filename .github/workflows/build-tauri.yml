@@ -20,6 +20,9 @@ on:
 
 jobs:
   build:
+    timeout-minutes: 45
+    permissions:
+      contents: write
     strategy:
       fail-fast: false
       matrix:
