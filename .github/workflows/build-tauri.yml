@@ -1,17 +1,5 @@
 name: Build Cartolith Desktop App (Tauri)
 
-# Builds a native double-click Cartolith app for Windows, macOS, and Linux
-# on every push to main, and attaches the results to a GitHub Release
-# when you push a version tag like "v1.0". Each OS builds its own native
-# app on its own real GitHub-hosted runner -- this is the only practical
-# way to get a real macOS build without a Mac and a real Windows
-# installer without a Windows machine.
-#
-# Check the "Actions" tab while a run is in progress; check "Releases"
-# for the downloadable files once it finishes (only for tag pushes --
-# pushes to `main` just build and upload workflow artifacts so you can
-# sanity-check a build before cutting a release).
-
 on:
   push:
     branches: [main]
@@ -30,14 +18,13 @@ jobs:
           - os: windows-latest
             triple: x86_64-pc-windows-msvc
             artifact_name: Cartolith-windows
-          - os: macos-14
+          - os: macos-15
             triple: aarch64-apple-darwin
             artifact_name: Cartolith-macos-apple-silicon
-          - os: macos-13
+          - os: macos-15-intel
             triple: x86_64-apple-darwin
             artifact_name: Cartolith-macos-intel
-          # Linux temporarily disabled to speed up turnaround while under
-          # time pressure -- re-add this block to bring it back:
+          # Linux temporarily disabled -- re-add to bring it back:
           # - os: ubuntu-latest
           #   triple: x86_64-unknown-linux-gnu
           #   artifact_name: Cartolith-linux
@@ -84,14 +71,12 @@ jobs:
             librsvg2-dev \
             patchelf
 
-      # ---- Frontend --------------------------------------------------
       - name: Build frontend
         working-directory: frontend
         run: |
           npm ci
           npm run build
 
-      # ---- Backend sidecar (PyInstaller) ------------------------------
       - name: Install Python dependencies
         run: |
           python -m pip install --upgrade pip
@@ -115,7 +100,6 @@ jobs:
           New-Item -ItemType Directory -Force -Path src-tauri/binaries | Out-Null
           Copy-Item "desktop-tauri/dist/cartolith-backend.exe" "src-tauri/binaries/cartolith-backend-${{ matrix.triple }}.exe"
 
-      # ---- Tauri shell --------------------------------------------------
       - name: Generate app icons
         run: npx --yes @tauri-apps/cli@2 icon src-tauri/icons/app-icon.png
 
@@ -124,7 +108,6 @@ jobs:
         env:
           CI: true
 
-      # ---- Package for students ------------------------------------------
       - name: Package macOS build
         if: runner.os == 'macOS'
         working-directory: src-tauri/target/${{ matrix.triple }}/release/bundle/macos
@@ -150,7 +133,7 @@ jobs:
           New-Item -ItemType Directory -Force -Path out | Out-Null
           if (Test-Path msi) { Copy-Item msi/*.msi out/ }
           if (Test-Path nsis) { Copy-Item nsis/*.exe out/ }
-          Compress-Archive -Path out/* -DestinationPath "../${{ matrix.artifact_name }}.zip"
+          Compress-Archive -Path out/* -DestinationPath "${{ matrix.artifact_name }}.zip"
 
       - uses: actions/upload-artifact@v4
         with:
