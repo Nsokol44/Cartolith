@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { useApp } from '../store'
-import { cartoApi } from '../api'
+import { cartoApi, getBase } from '../api'
+import { fireLessonEvent } from '../lesson-events'
 
 // ── Leaflet loaded via CDN script tag injected once ──────────────────────────
 function useLeaflet(onReady) {
@@ -479,12 +480,13 @@ export default function CartographyTab() {
                        shpTimeSteps: form.shp_time_steps || [],
                        shpTimeIdx: form.shp_time_idx || 0 }
     setLayers(ls => [...ls, newLayer])
+    fireLessonEvent('layer:added')
     setAddingLayer(false)
 
     try {
       // If this is a NetCDF dataset, push the correct time band first
       if (ds?.netcdf_meta && timeIdx > 0) {
-        await fetch(`/api/netcdf/${encodeURIComponent(form.dataset_id)}/load_time_band`, {
+        await fetch(`${getBase()}/api/netcdf/${encodeURIComponent(form.dataset_id)}/load_time_band`, {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ time_index: timeIdx, level_index: 0 })
         })
@@ -682,7 +684,7 @@ export default function CartographyTab() {
                       setLayers(ls => ls.map(l => l.id === layer.id ? { ...l, currentTimeIdx: t } : l))
                       // Push to backend and re-fetch layer data
                       try {
-                        await fetch(`/api/netcdf/${encodeURIComponent(layer.config.dataset_id)}/load_time_band`, {
+                        await fetch(`${getBase()}/api/netcdf/${encodeURIComponent(layer.config.dataset_id)}/load_time_band`, {
                           method: 'POST', headers: { 'Content-Type': 'application/json' },
                           body: JSON.stringify({ time_index: t, level_index: 0 })
                         })
@@ -912,14 +914,14 @@ export default function CartographyTab() {
                   <div className="grid-2" style={{ marginBottom: 8 }}>
                     <div>
                       <label className="field-label">Classification</label>
-                      <select value={form.classification} onChange={e => setForm(f => ({ ...f, classification: e.target.value }))}>
+                      <select value={form.classification} onChange={e => { setForm(f => ({ ...f, classification: e.target.value })); fireLessonEvent('classification:changed') }}>
                         <option value="quantile">Quantile</option>
                         <option value="equal">Equal interval</option>
                       </select>
                     </div>
                     <div>
                       <label className="field-label">Classes</label>
-                      <select value={form.n_classes} onChange={e => setForm(f => ({ ...f, n_classes: +e.target.value }))}>
+                      <select value={form.n_classes} onChange={e => { setForm(f => ({ ...f, n_classes: +e.target.value })); fireLessonEvent('classes:changed') }}>
                         {[3,4,5,6,7,8].map(n => <option key={n} value={n}>{n}</option>)}
                       </select>
                     </div>

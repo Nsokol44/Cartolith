@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from 'react'
 import { useApp } from '../store'
 import { geoprocessApi, rasterToolsApi, networkApi } from '../api'
+import { fireLessonEvent } from '../lesson-events'
 import { InfoDot, ConceptCard, useSampleLoader } from './Learn'
 
 const CATS = [
@@ -110,6 +111,7 @@ export default function GeoprocessTab({ go }) {
       const api = cat.api === 'raster' ? rasterToolsApi : cat.api === 'network' ? networkApi : geoprocessApi
       const ds = await api.run(tool, inputId, params)
       dispatch({ type: 'ADD_DATASET', dataset: ds }); setDone(ds); load()
+      fireLessonEvent('geoprocess:ran')
     } catch (e) { setError(e.message?.split('\n')[0] || String(e)) }
     finally { setRunning(false) }
   }

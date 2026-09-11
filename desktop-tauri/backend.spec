@@ -42,6 +42,8 @@ COLLECT_ALL_PACKAGES = [
     "statsmodels",
     "skimage",
     "netCDF4",
+    "xarray",
+    "matplotlib",
     "h3",
     "laspy",
     "pyarrow",

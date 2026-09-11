@@ -8,17 +8,31 @@ This folder is the complete, ready-to-push project: the renamed
 app source (formerly "DataLens Explorer") plus the desktop packaging
 that turns it into a one-click executable.
 
-## For students: just use the pre-built app — don't clone this repo
+## For students: quick start
 
-If you're a student in this class, you don't need Python, Node, GDAL, or
-any of this source code. Go to the repo's **Releases** page, download
-the zip for your OS, unzip it, and run it — see "For Mac students" below
-if you're on a Mac. `./start.sh` and `pip install` are **not** for you;
-they're the instructor's local dev workflow and depend on your own
-machine's Python/GDAL setup being just right, which is exactly the kind
-of hassle the pre-built app exists to avoid. If someone points you at
-`./start.sh`, that's the wrong instructions for a student — let your
-instructor know.
+1. Go to **[the latest release](https://github.com/Nsokol44/Cartolith/releases/latest)**.
+2. Under "Assets", download the one file for your computer:
+   - **Windows** → `Cartolith-windows.zip`
+   - **Mac, 2020 or newer (M1/M2/M3/M4 chip)** → `Cartolith-macos-apple-silicon.zip`
+   - **Mac, older (Intel chip)** → `Cartolith-macos-intel.zip`
+   - Not sure which Mac you have? Apple menu → **About This Mac** → look for "Chip" (Apple M-something) or "Processor" (Intel).
+3. Unzip it, then:
+   - **Windows:** run the installer inside (a `.msi` or `*-setup.exe` file — not a plain `Cartolith.exe`). Windows will likely warn "Windows protected your PC" — click **More info → Run anyway**. Once installed, open Cartolith from the Start Menu.
+   - **Mac:** double-click **`Install and Run Cartolith.command`** the *first* time (not `Cartolith.app` directly) — this clears the "not verified" security block for you. After that, open `Cartolith.app` normally.
+4. First launch can take a minute or two to fully start — that's expected, not frozen. Leave the window open.
+
+You don't need Python, Node, GDAL, or this source code to run Cartolith. If someone points you at `./start.sh` or `pip install`, that's the instructor's dev setup, not meant for students — let your instructor know if that happens.
+
+**If the app still won't launch after trying the above,** there's a
+second, simpler-but-uglier fallback build: look for `Cartolith-web-*`
+zips on the same release page (e.g. `Cartolith-web-windows.zip`). This
+version opens in your regular web browser instead of its own window,
+with a plain console/terminal window running alongside it — less
+polished, but sometimes gets past whatever's blocking the main app on a
+particular machine. Same download-and-run steps apply. If even that
+doesn't work, "Running from source as a last resort" further down is
+the final fallback, with the caveat that it can hit different problems
+of its own.
 
 ## For instructors/developers: run it locally (dev mode)
 
@@ -50,12 +64,21 @@ git push origin v1.0
 
 GitHub's own Windows/macOS/Linux runners will each build a native app
 automatically — check the "Actions" tab while it runs, then "Releases"
-for the downloadable zips once it finishes. `desktop-tauri/` +
-`.github/workflows/build-tauri.yml` builds a real native app window
-(dock icon, no browser tab, no console window) using
-[Tauri](https://tauri.app) — see `desktop-tauri/README.md`, including an
-honest note on what this does and doesn't fix about the macOS "not
-verified" message.
+for the downloadable zips once it finishes. Two separate pipelines run
+on the same tag push and attach to the same release:
+
+- **`desktop-tauri/` + `.github/workflows/build-tauri.yml` (primary).**
+  A real native app window (dock icon, no browser tab, no console
+  window) using [Tauri](https://tauri.app) — see `desktop-tauri/README.md`,
+  including an honest note on what this does and doesn't fix about the
+  macOS "not verified" message. Give this to students first.
+- **`desktop/` + `.github/workflows/build-desktop.yml` (fallback).**
+  Opens in the student's regular browser instead, with a console window
+  running alongside it. Uglier, but occasionally more forgiving of
+  unusual local security software than a native window. All of this
+  pipeline's asset names are prefixed `Cartolith-web-*` specifically so
+  they can never collide with the Tauri build's `Cartolith-*` names on
+  the same release — keep that prefix if you ever rename anything here.
 
 Look for these exact filenames on the Releases page:
 
@@ -65,6 +88,24 @@ Look for these exact filenames on the Releases page:
 | `Cartolith-macos-apple-silicon.zip` | Macs from 2020+ (M1/M2/M3/M4 chip) |
 | `Cartolith-macos-intel.zip` | Older Intel Macs |
 | `Cartolith-linux.zip` | Linux students |
+| `Cartolith-web-windows.zip` | Windows students, if the native app won't launch |
+| `Cartolith-web-macos-apple-silicon.zip` | Macs from 2020+, if the native app won't launch |
+| `Cartolith-web-macos-intel.zip` | Older Intel Macs, if the native app won't launch |
+| `Cartolith-web-linux.zip` | Linux students, if the native app won't launch |
+
+### For Windows students
+
+The Windows zip contains an **installer** (a `.msi` file, or something
+named like `Cartolith_1.0.0_x64-setup.exe`) — not a ready-to-run
+`Cartolith.exe`. Students need to run that installer and let it finish;
+Cartolith then shows up in the Start Menu like any normal installed
+program, which is what they actually open afterward — not anything in
+the originally downloaded/unzipped folder. Windows SmartScreen will
+likely warn "Windows protected your PC" the first time the installer
+runs, since it's unsigned — clicking **"More info" → "Run anyway"** is
+expected and safe, not a sign of a problem. Worth stating this
+explicitly to the class up front; "I can't find Cartolith.exe" is an
+easy thing to get stuck on otherwise.
 
 ### For Mac students
 
@@ -81,6 +122,44 @@ paid Apple Developer account ($99/yr) for code signing + notarization.
 The `.command` workaround is the free alternative. See
 `desktop-tauri/README.md` for the full explanation and how to set up
 notarization if you want to remove this step entirely.
+
+## Running from source as a last resort
+
+If a student's packaged app genuinely won't launch no matter what (rare,
+but possible — different Windows/Mac security software, an unusual
+system config, etc.), running Cartolith directly from source is a
+legitimate fallback. It is **not** a simpler alternative to the
+packaged app — it trades "installer/security-prompt friction" for
+"your Python environment has to cooperate," which is exactly the
+problem the packaged app exists to avoid for everyone else. Only reach
+for this with a specific stuck student, not as a general recommendation.
+
+```bash
+git clone https://github.com/Nsokol44/Cartolith.git
+cd Cartolith
+./start.sh
+```
+
+A few things that measurably improve the odds of this working:
+
+- **Use Python 3.10–3.12.** The geospatial packages (`fiona`, `rasterio`,
+  `geopandas`, `pyproj`) have the best prebuilt-wheel coverage on these
+  versions. Very new (3.13+) or very old Python is more likely to force
+  a from-source build, which then needs a system GDAL install to even
+  attempt and often fails without one.
+- **Upgrade pip first:** `pip install --upgrade pip setuptools wheel`
+  before running `./start.sh` — an outdated resolver is a common cause
+  of "tries to build from source and fails" even when a working
+  prebuilt wheel exists.
+- **On Mac, if it still tries to build from source:** `brew install gdal`
+  gives pip a system GDAL to link against.
+- **On Apple Silicon specifically:** make sure Terminal itself isn't
+  running under Rosetta (check with `arch` — it should print `arm64`,
+  not `i386`/`x86_64`).
+
+If a student hits an error here, get the exact `pip install` error text
+(not just "it failed") before troubleshooting further — the fix is
+usually specific to which package failed and why.
 
 ## What changed from the original DataLens Explorer
 

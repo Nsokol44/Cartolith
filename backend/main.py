@@ -14,58 +14,77 @@ from pathlib import Path
 
 try:
     from scipy import stats as scipy_stats; HAS_SCIPY = True
-except ImportError: HAS_SCIPY = False
+except ImportError as e:
+    HAS_SCIPY = False; print(f"[startup] scipy unavailable: {e}")
 
 try:
     import statsmodels.api as sm
     from statsmodels.stats.diagnostic import het_breuschpagan
     from statsmodels.stats.stattools import durbin_watson
     HAS_STATSMODELS = True
-except ImportError: HAS_STATSMODELS = False
+except ImportError as e:
+    HAS_STATSMODELS = False; print(f"[startup] statsmodels unavailable: {e}")
 
 try:
     import geopandas as gpd; HAS_GEOPANDAS = True
-except ImportError: HAS_GEOPANDAS = False
+except ImportError as e:
+    HAS_GEOPANDAS = False; print(f"[startup] geopandas unavailable: {e}")
 
 try:
     import rasterio
     from rasterio.enums import Resampling
     HAS_RASTERIO = True
-except ImportError: HAS_RASTERIO = False
+except Exception as e:
+    HAS_RASTERIO = False
+    print(f"[startup] rasterio unavailable: {e!r}")
+    traceback.print_exc()
 
 try:
     import xarray as xr; HAS_XARRAY = True
-except ImportError: HAS_XARRAY = False
+except Exception as e:
+    HAS_XARRAY = False
+    print(f"[startup] xarray unavailable: {e!r}")
+    traceback.print_exc()
 
 try:
     import netCDF4 as nc4; HAS_NETCDF = True
-except ImportError: HAS_NETCDF = False
+except Exception as e:
+    HAS_NETCDF = False
+    print(f"[startup] netCDF4 unavailable: {e!r}")
+    traceback.print_exc()
 
 try:
     import laspy; HAS_LASPY = True
-except ImportError: HAS_LASPY = False
+except ImportError as e:
+    HAS_LASPY = False; print(f"[startup] laspy unavailable: {e}")
 
 try:
     from PIL import Image; HAS_PIL = True
-except ImportError: HAS_PIL = False
+except ImportError as e:
+    HAS_PIL = False; print(f"[startup] PIL unavailable: {e}")
 
 try:
     from sklearn.preprocessing import StandardScaler
     from sklearn.decomposition import PCA
     from sklearn.cluster import KMeans
     HAS_SKLEARN = True
-except ImportError: HAS_SKLEARN = False
+except ImportError as e:
+    HAS_SKLEARN = False; print(f"[startup] sklearn unavailable: {e}")
 
 try:
     import matplotlib; matplotlib.use("Agg")
     import matplotlib.cm as cm
     from matplotlib.colors import Normalize
     HAS_MPL = True
-except ImportError: HAS_MPL = False
+except Exception as e:
+    HAS_MPL = False
+    print(f"[startup] matplotlib unavailable: {e!r}")
+    traceback.print_exc()
 
 try:
     import duckdb; HAS_DUCKDB = True
-except ImportError: HAS_DUCKDB = False
+except ImportError as e:
+    HAS_DUCKDB = False; print(f"[startup] duckdb unavailable: {e}")
 
 app = FastAPI(title="Cartolith API", version="5.0.0")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
@@ -119,20 +138,25 @@ def array_stats(arr):
             "nodata_count": int(arr.size - len(flat))}
 
 def ndarray_to_png_b64(arr, colormap="viridis"):
-    if not HAS_MPL or not HAS_PIL: return ""
+    if not HAS_MPL or not HAS_PIL:
+        print(f"[render] ndarray_to_png_b64: HAS_MPL={HAS_MPL} HAS_PIL={HAS_PIL} — one or both unavailable, see [startup] lines above for why")
+        return ""
     try:
         valid = arr[np.isfinite(arr)]
         if len(valid) == 0: return ""
         vmin, vmax = float(valid.min()), float(valid.max())
         if vmin == vmax: vmax = vmin + 1
         norm = Normalize(vmin=vmin, vmax=vmax)
-        cmap_fn = cm.get_cmap(colormap)
+        cmap_fn = matplotlib.colormaps.get(colormap)
         rgba = cmap_fn(norm(np.where(np.isfinite(arr), arr, np.nan)))
         rgba[~np.isfinite(arr)] = [0, 0, 0, 0]
         img = Image.fromarray((rgba * 255).astype(np.uint8), mode="RGBA")
         buf = io.BytesIO(); img.save(buf, format="PNG")
         return base64.b64encode(buf.getvalue()).decode()
-    except: return ""
+    except Exception as e:
+        print(f"[render] ndarray_to_png_b64 failed: {e!r} (colormap={colormap!r}, arr.shape={getattr(arr,'shape',None)}, arr.dtype={getattr(arr,'dtype',None)})")
+        traceback.print_exc()
+        return ""
 
 def raster_band_thumb(src, band_idx=1, max_dim=512, colormap="viridis"):
     try:
@@ -222,6 +246,45 @@ def _gdf_to_result(gdf, fname):
             "missing": {c: int(df[c].isna().sum()) for c in df.columns},
             "geo_meta": {"geometry_type": geom_type, "crs": crs_str, "bounds": bounds, "feature_count": len(gdf)}}
 
+def parse_zip_upload(content, fname):
+    """
+    A .zip upload isn't always a shapefile bundle -- inspect what's
+    actually inside before assuming shapefile, so a zipped NetCDF, raster,
+    or LiDAR file doesn't get misdiagnosed as "No .shp found in zip".
+    """
+    with tempfile.TemporaryDirectory() as tmpdir:
+        zpath = os.path.join(tmpdir, "upload.zip")
+        with open(zpath, "wb") as f: f.write(content)
+        with zipfile.ZipFile(zpath) as z: z.extractall(tmpdir)
+
+        if list(Path(tmpdir).rglob("*.shp")):
+            return parse_shapefile_upload(content, fname)
+
+        for pattern, handler_ext in [
+            ("*.nc", "nc"), ("*.nc4", "nc4"), ("*.cdf", "cdf"),
+            ("*.tif", "tif"), ("*.tiff", "tiff"),
+            ("*.las", "las"), ("*.laz", "laz"),
+        ]:
+            hits = list(Path(tmpdir).rglob(pattern))
+            if not hits: continue
+            inner = hits[0]
+            inner_name = f"{fname}::{inner.name}"
+            inner_content = inner.read_bytes()
+            if handler_ext in ("nc", "nc4", "cdf"):
+                return parse_netcdf(inner_content, inner_name)
+            if handler_ext in ("tif", "tiff"):
+                if HAS_RASTERIO:
+                    try: return parse_raster(inner_content, inner_name, handler_ext)
+                    except Exception: pass
+                return parse_image(inner_content, inner_name, handler_ext)
+            if handler_ext in ("las", "laz"):
+                return parse_lidar(inner_content, inner_name, handler_ext)
+
+        raise ValueError(
+            "No recognized file found in zip (looked for .shp, "
+            ".nc/.nc4/.cdf, .tif/.tiff, .las/.laz)"
+        )
+
 def parse_shapefile_upload(content, fname):
     if not HAS_GEOPANDAS: raise ValueError("geopandas not installed")
     if content[:2] == b'PK':
@@ -302,6 +365,20 @@ def _open_netcdf_safe(path):
             return xr.open_dataset(path, engine="netcdf4", mask_and_scale=True, decode_times=False)
         except Exception:
             return xr.open_dataset(path, engine="netcdf4", decode_times=False, decode_cf=False)
+
+def _flip_if_south_up(a, ds):
+    """NetCDF lat coords usually run south→north, but PNG row 0 is the TOP
+    of the image. Flip so rendered frames come out north-up."""
+    try:
+        lat_c = _detect_coord(ds, ["lat","latitude","LAT","LATITUDE","nav_lat","y","Y"])
+        if not lat_c or lat_c not in ds:
+            return a
+        lv = np.asarray(ds[lat_c].values).flatten()
+        if lv.size >= 2 and float(lv[0]) < float(lv[-1]):
+            return a[::-1, :]
+    except Exception:
+        pass
+    return a
 
 
 def parse_netcdf(content, fname):
@@ -564,7 +641,7 @@ async def upload_dataset(file: UploadFile = File(...), name: Optional[str] = Non
     fname = name or file.filename or "upload"
     ext = fname.rsplit(".", 1)[-1].lower() if "." in fname else "csv"
     try:
-        if ext == "zip": return parse_shapefile_upload(content, fname)
+        if ext == "zip": return parse_zip_upload(content, fname)
         elif ext == "shp": return parse_shapefile_upload(content, fname)
         elif ext == "dbf": return parse_dbf(content, fname)
         elif ext in ("tif","tiff","geotiff","img","dem","hgt","asc"):
@@ -782,6 +859,7 @@ async def animation_frame(dataset_id: str, variable: str = "", band: int = 1,
     while a.ndim > 2: a = a[0]
     if a.ndim == 1: a = a.reshape(1, -1)
     if a.ndim == 0: ds.close(); raise HTTPException(status_code=400, detail=f"Variable '{vname}' is scalar — choose a spatial variable")
+    a = _flip_if_south_up(a, ds)
     ds.close()
     # Downscale to requested width
     if a.shape[1] > width:
@@ -868,6 +946,7 @@ async def export_animation(request: dict):
                     except: pass
                 while a.ndim > 2: a = a[0]
                 if a.ndim == 1: a = a.reshape(1, -1)
+                a = _flip_if_south_up(a, ds)
             raw_arrays.append(a)
             valid = a[np.isfinite(a)]
             if len(valid) > 0:
@@ -885,7 +964,7 @@ async def export_animation(request: dict):
     # Convert arrays to PIL frames with consistent colormap
     import matplotlib.cm as cm_mod
     from matplotlib.colors import Normalize
-    cmap_fn = cm_mod.get_cmap(colormap)
+    cmap_fn = matplotlib.colormaps.get(colormap)
     norm = Normalize(vmin=global_min, vmax=global_max)
 
     for a in raw_arrays:
@@ -1147,6 +1226,7 @@ async def netcdf_slice(dataset_id: str, request: dict):
     if fv: a[a==float(fv)] = np.nan
     while a.ndim > 2: a = a[0]
     if a.ndim == 1: a = a.reshape(1,-1)
+    a = _flip_if_south_up(a, ds)
     ds.close()
     thumb = ndarray_to_png_b64(a, colormap)
     return {"thumbnail": thumb, "stats": array_stats(a), "shape": list(a.shape)}
@@ -1201,6 +1281,7 @@ class CartoLayerRequest(BaseModel):
     clip_bbox: Optional[CartoBBoxModel] = None; max_features: Optional[int] = 5000
     colormap: Optional[str] = "viridis"; classification: Optional[str] = "quantile"
     n_classes: Optional[int] = 5
+    variable: Optional[str] = None; time_index: Optional[int] = 0
 
 def _classify(values, method, n):
     valid = values[np.isfinite(values)]
@@ -1243,6 +1324,54 @@ def carto_extent(dataset_id: str):
 def carto_layer(req: CartoLayerRequest):
     ds_id = req.dataset_id
     if req.layer_type == "raster_overlay":
+        # NetCDF datasets live in netcdf_cache, not raster_cache -- render
+        # a single variable/time-step frame with xarray the same way
+        # /api/netcdf/{id}/animation_frame does, rather than assuming
+        # every "raster_overlay" is a plain GDAL-readable raster.
+        if ds_id in netcdf_cache:
+            if not HAS_XARRAY:
+                raise HTTPException(status_code=500, detail="xarray required to render NetCDF layers")
+            path = netcdf_cache[ds_id]
+            ds = _open_netcdf_safe(path)
+            real_vars = [k for k, v in ds.data_vars.items()
+                         if not _is_grid_mapping_var(v) and v.dtype.kind in ('f','i','u') and v.ndim >= 2]
+            vname = req.variable if req.variable and req.variable in ds and not _is_grid_mapping_var(ds[req.variable]) else None
+            if not vname:
+                vname = next(iter(real_vars), None)
+            if not vname:
+                available = list(ds.data_vars.keys()); ds.close()
+                raise HTTPException(status_code=400, detail=f"No plottable variables found. Available: {available}")
+            time_c = _detect_coord(ds, ["time","TIME","Time","t","T"])
+            lev_c = _detect_coord(ds, ["level","lev","pressure","plev","depth","height","z","Z"])
+            arr = ds[vname]
+            fv = ds[vname].attrs.get("_FillValue") or ds[vname].attrs.get("missing_value")
+            if time_c and time_c in arr.dims:
+                arr = arr.isel({time_c: min(req.time_index or 0, int(ds.sizes.get(time_c,1))-1)})
+            if lev_c and lev_c in arr.dims:
+                arr = arr.isel({lev_c: 0})
+            a = arr.values.astype(np.float64)
+            if fv is not None:
+                try: a[a == float(fv)] = np.nan
+                except: pass
+            while a.ndim > 2: a = a[0]
+            a = _flip_if_south_up(a, ds)
+            ds.close()
+            thumb = ndarray_to_png_b64(a, req.colormap or "viridis")
+            if not thumb:
+                raise HTTPException(status_code=500, detail="Could not render frame — check matplotlib/Pillow installed")
+            # Bounds: reuse the flattened _latitude/_longitude sample that
+            # was already computed and stored when this file was uploaded
+            # (see parse_netcdf) -- works for both simple 1D lat/lon grids
+            # and 2D curvilinear/projected grids (e.g. Lambert Conformal).
+            bounds_wgs84 = [-180.0, -90.0, 180.0, 90.0]
+            if ds_id in datasets:
+                df_nc = datasets[ds_id]
+                if "_latitude" in df_nc.columns and "_longitude" in df_nc.columns:
+                    lat_s = pd.to_numeric(df_nc["_latitude"], errors="coerce").dropna()
+                    lon_s = pd.to_numeric(df_nc["_longitude"], errors="coerce").dropna()
+                    if len(lat_s) and len(lon_s):
+                        bounds_wgs84 = [float(lon_s.min()), float(lat_s.min()), float(lon_s.max()), float(lat_s.max())]
+            return {"type":"raster_overlay","bounds":bounds_wgs84,"image_b64":thumb,"dataset_id":ds_id,"variable":vname}
         if ds_id not in raster_cache: raise HTTPException(status_code=404)
         with rasterio.open(raster_cache[ds_id]) as src:
             b = src.bounds; bounds_wgs84 = [b.left, b.bottom, b.right, b.top]

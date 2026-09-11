@@ -2,7 +2,7 @@ import { useApp } from "../store"
 
 export const TABS = ["Explore", "Statistics", "Visualize", "Analyze", "Compare", "Cartography", "SQL Lab", "Geoprocess"]
 
-export default function Topbar({ activeTab, setActiveTab, onOpenLearn }) {
+export default function Topbar({ activeTab, setActiveTab, onOpenLearn, onOpenLessons, lessonsOpen }) {
   const { state } = useApp()
   const dsCount = Object.keys(state.datasets).length
   return (
@@ -18,6 +18,18 @@ export default function Topbar({ activeTab, setActiveTab, onOpenLearn }) {
       </div>
       <div style={{ flex: 1, minWidth: 8 }} />
       <div style={{ display: "flex", alignItems: "center", gap: 10, paddingRight: 16, flexShrink: 0 }}>
+        <button
+          className="btn sm"
+          onClick={onOpenLessons}
+          title="Step-by-step guided lessons"
+          style={{
+            borderColor: lessonsOpen ? "var(--accent2)" : "var(--bdr3)",
+            color: lessonsOpen ? "var(--accent2)" : "var(--txt2)",
+            background: lessonsOpen ? "rgba(45,212,191,0.10)" : "transparent",
+          }}
+        >
+          Lessons
+        </button>
         <button className="btn sm" onClick={onOpenLearn} title="Plain-English GIS help" style={{ borderColor: "var(--accent)", color: "var(--accent)", background: "var(--accent-dim)" }}>
           <span style={{ fontWeight: 700 }}>?</span> Learn GIS
         </button>

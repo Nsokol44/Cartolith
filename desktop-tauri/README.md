@@ -98,6 +98,16 @@ dependency gets added later without being added to `COLLECT_ALL_PACKAGES`
 in `backend.spec`. **Test each platform's build before handing it to a
 full class.**
 
+## Windows: it's an installer, not a plain .exe
+
+The Windows zip contains an installer (`.msi` or `*-setup.exe`), not a
+`Cartolith.exe` a student can just double-click and go. Run the
+installer, let it finish, then open Cartolith from the Start Menu —
+that's the actual app going forward, not anything in the unzipped
+download folder. SmartScreen will likely flag the installer as unsigned
+("Windows protected your PC") — "More info" → "Run anyway" is the
+expected path past it.
+
 ## The honest truth about the macOS "not verified" message
 
 Switching to Tauri does **not**, by itself, make macOS Gatekeeper stop

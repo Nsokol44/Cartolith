@@ -1,5 +1,6 @@
 import { useState, useEffect } from "react"
 import { AppProvider, useApp } from "./store"
+import LessonPanel from "./components/LessonPanel"
 import { api } from "./api"
 import Topbar from "./components/Topbar"
 import Sidebar from "./components/Sidebar"
@@ -49,6 +50,7 @@ function AppInner() {
   const { state, dispatch } = useApp()
   const [activeTab, setActiveTab] = useState("Explore")
   const [learnOpen, setLearnOpen] = useState(false)
+  const [lessonsOpen, setLessonsOpen] = useState(false)
   const [welcomeDismissed, setWelcomeDismissed] = useState(false)
   const sample = useSampleLoader(dispatch)
 
@@ -96,7 +98,7 @@ function AppInner() {
 
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100vh", overflow: "hidden" }}>
-      <Topbar activeTab={activeTab} setActiveTab={setActiveTab} onOpenLearn={() => setLearnOpen(true)} />
+      <Topbar activeTab={activeTab} setActiveTab={setActiveTab} onOpenLearn={() => setLearnOpen(true)} onOpenLessons={() => setLessonsOpen(o => !o)} lessonsOpen={lessonsOpen} />
       <div style={{ display: "flex", flex: 1, overflow: "hidden" }}>
         <Sidebar />
         <div style={{ flex: 1, overflow: "hidden", display: "flex", flexDirection: "column" }}>
@@ -108,6 +110,12 @@ function AppInner() {
           )}
           <div style={{ flex: 1, overflow: "hidden" }}>{tabContent[activeTab]}</div>
         </div>
+        <LessonPanel
+          open={lessonsOpen}
+          onClose={() => setLessonsOpen(false)}
+          activeTab={activeTab}
+          setActiveTab={setActiveTab}
+        />
       </div>
       <LearnDrawer open={learnOpen} onClose={() => setLearnOpen(false)} onLoadSample={() => sample.load("both")} />
       {showWelcome && <Welcome onClose={() => setWelcomeDismissed(true)} onLoadSample={welcomeLoad} loading={sample.loading} />}

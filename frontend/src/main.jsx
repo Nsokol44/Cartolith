@@ -28,6 +28,9 @@ function renderStatus(text, showReassurance) {
 
 renderStatus('Starting Cartolith…', false)
 
+// Under Tauri, the backend runs as a separate sidecar process and needs a
+// moment to come up before the app makes its first API call. In dev mode
+// / the old desktop build this resolves immediately (no-op).
 initBackend({
   onStatus: (text) => renderStatus(text, Date.now() - startedAt > 8_000),
 })
