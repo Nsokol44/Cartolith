@@ -9,6 +9,7 @@ from typing import Optional, List, Dict, Any
 import pandas as pd
 import numpy as np
 import json, io, os, tempfile, traceback, base64, zipfile, struct
+import ast, re, platform  # used by the notebook execute/export endpoints
 import datetime as dt
 from pathlib import Path
 
@@ -1487,6 +1488,76 @@ def carto_vector(body: dict):
 
 # ── Analysis ──────────────────────────────────────────────────────────────────
 
+# Advanced analyses + the type-safety rules live in their own module so this
+# file stays navigable. See backend/advanced_methods.py.
+try:
+    import advanced_methods as adv
+    HAS_ADVANCED = True
+except Exception as e:
+    HAS_ADVANCED = False
+    print(f"[startup] advanced_methods unavailable: {e!r}")
+    traceback.print_exc()
+
+
+class CapabilityRequest(BaseModel):
+    dataset_ids: List[str] = []
+    variables: List[str] = []
+
+
+@app.post("/api/analyze/capabilities")
+def analysis_capabilities(req: CapabilityRequest):
+    """
+    Which analyses can run on the current selection, and why not.
+
+    The UI calls this whenever the selection changes so it can grey out and
+    explain, rather than letting someone run a regression on a text column and
+    then showing them a statsmodels traceback.
+    """
+    if not HAS_ADVANCED:
+        return {"available": False, "analyses": {}}
+
+    # Build a frame holding exactly the selected columns, resolving the
+    # "dataset::column" form the sidebar uses for cross-dataset selections.
+    cols, frames = [], []
+    for var in req.variables:
+        ds_id, col = (var.split("::", 1) if "::" in var
+                      else ((req.dataset_ids[0] if req.dataset_ids else None), var))
+        if ds_id in datasets and col in datasets[ds_id].columns:
+            frames.append(datasets[ds_id][col].rename(var))
+            cols.append(var)
+
+    # Coordinates come from the primary dataset — that is the geography the
+    # spatial methods would actually run against.
+    primary = req.dataset_ids[0] if req.dataset_ids and req.dataset_ids[0] in datasets else None
+    base = datasets[primary] if primary is not None else pd.DataFrame()
+    df = pd.concat(frames, axis=1) if frames else pd.DataFrame()
+    for extra in ("_centroid_lat", "_centroid_lon", "_latitude", "_longitude", "lat", "lon"):
+        if extra in base.columns and extra not in df.columns:
+            df[extra] = base[extra]
+
+    kinds = adv.classify_columns(df, cols) if cols else {}
+    has_xy, _, _ = adv.has_coordinates(df if len(df) else base)
+
+    out = {}
+    for key, spec in adv.ANALYSIS_SPECS.items():
+        try:
+            r = adv.check_eligibility(key, df, cols) if cols else {
+                "ok": False, "reason": "No variables selected yet.",
+                "fix": "Pick one or more columns in the Variables panel.",
+                "requirement": None,
+            }
+        except Exception as e:
+            r = {"ok": False, "reason": f"Could not evaluate: {e}", "fix": None}
+        out[key] = {**r, "label": spec.get("label", key), "note": spec.get("note"),
+                    "advanced": bool(spec.get("advanced"))}
+
+    return {
+        "available": True, "analyses": out,
+        "column_kinds": kinds, "has_coordinates": bool(has_xy),
+        "n_rows": int(len(base)) if len(base) else int(len(df)),
+    }
+
+
 class AnalysisRequest(BaseModel):
     dataset_ids: List[str]; analysis_type: str; variables: List[str]
     params: Optional[Dict[str,Any]] = {}
@@ -1503,6 +1574,35 @@ def run_analysis(req: AnalysisRequest):
         if col not in datasets[ds_id].columns: raise HTTPException(status_code=400, detail=f"Column '{col}' not found")
         return datasets[ds_id][col]
     t = req.analysis_type
+
+    # Preflight. Catch the "wrong variable type" class of mistake here, where
+    # we can say something useful, instead of letting it surface as a library
+    # traceback (the old behaviour: statsmodels' "Pandas data cast to numpy
+    # dtype of object" when a text column reached OLS).
+    if HAS_ADVANCED and req.variables:
+        try:
+            _frames = []
+            for _v in req.variables:
+                _ds, _c = resolve(_v)
+                if _ds in datasets and _c in datasets[_ds].columns:
+                    _frames.append(datasets[_ds][_c].rename(_v))
+            _primary = req.dataset_ids[0] if req.dataset_ids and req.dataset_ids[0] in datasets else None
+            _base = datasets[_primary] if _primary is not None else pd.DataFrame()
+            _df = pd.concat(_frames, axis=1) if _frames else pd.DataFrame()
+            for _extra in ("_centroid_lat", "_centroid_lon", "_latitude", "_longitude", "lat", "lon"):
+                if _extra in _base.columns and _extra not in _df.columns:
+                    _df[_extra] = _base[_extra]
+            _elig = adv.check_eligibility(t, _df, [v for v in req.variables if v in _df.columns])
+            if not _elig.get("ok") and _elig.get("reason"):
+                _msg = _elig["reason"]
+                if _elig.get("fix"):
+                    _msg += f" {_elig['fix']}"
+                raise HTTPException(status_code=400, detail=_msg)
+        except HTTPException:
+            raise
+        except Exception:
+            pass  # never let the guard itself block a valid analysis
+
     try:
         if t == "describe":
             results = {}
@@ -1535,7 +1635,15 @@ def run_analysis(req: AnalysisRequest):
                 "matrix":{c:{c2:safe_float(v) for c2,v in row.items()} for c,row in corr.to_dict().items()},"pvalues":pvals}
         elif t == "regression":
             dep_var = req.params.get("dependent",req.variables[-1]); indep_vars = [v for v in req.variables if v!=dep_var]
-            series = {v: get_series(v) for v in req.variables}; df_sub = pd.DataFrame(series).dropna()
+            # to_numeric with errors="coerce" is the guard: a text column
+            # becomes NaN and gets dropped, rather than arriving at OLS as
+            # object dtype and blowing up inside statsmodels.
+            series = {v: pd.to_numeric(get_series(v), errors="coerce") for v in req.variables}
+            df_sub = pd.DataFrame(series).replace([np.inf,-np.inf], np.nan).dropna()
+            if len(df_sub) < 3:
+                raise HTTPException(status_code=400, detail=(
+                    f"Only {len(df_sub)} complete numeric rows remain after dropping missing "
+                    f"values. Check that every selected variable is numeric and populated."))
             y, X = df_sub[dep_var], df_sub[indep_vars]
             if HAS_STATSMODELS:
                 X_sm = sm.add_constant(X); model = sm.OLS(y,X_sm).fit()
@@ -1627,6 +1735,79 @@ def run_analysis(req: AnalysisRequest):
             return {"type":"timeseries","trend":[safe_float(v) for v in decomp.trend],
                 "seasonal":[safe_float(v) for v in decomp.seasonal],
                 "residual":[safe_float(v) for v in decomp.resid],"observed":[safe_float(v) for v in decomp.observed]}
+        # ── advanced methods ────────────────────────────────────────────────
+        elif t in ("decision_tree", "random_forest", "neural_network",
+                   "morans_i", "gearys_c", "local_morans", "gwr", "spatial_lag"):
+            if not HAS_ADVANCED:
+                raise HTTPException(status_code=500,
+                    detail="Advanced methods are unavailable — backend/advanced_methods.py failed to import.")
+
+            # Assemble the selected columns plus the primary dataset's
+            # coordinates, which the spatial methods need.
+            frames = []
+            for v in req.variables:
+                ds_id, col = resolve(v)
+                if ds_id in datasets and col in datasets[ds_id].columns:
+                    frames.append(datasets[ds_id][col].rename(v))
+            if not frames:
+                raise HTTPException(status_code=400, detail="None of the selected variables could be found.")
+            work = pd.concat(frames, axis=1)
+
+            primary = req.dataset_ids[0] if req.dataset_ids and req.dataset_ids[0] in datasets else None
+            if primary is not None:
+                base = datasets[primary]
+                for extra in ("_centroid_lat","_centroid_lon","_latitude","_longitude","lat","lon","latitude","longitude"):
+                    if extra in base.columns and extra not in work.columns and len(base) == len(work):
+                        work[extra] = base[extra].values
+
+            sel = [v for v in req.variables if v in work.columns]
+            k = int(req.params.get("k_neighbors") or 8)
+
+            try:
+                if t in ("decision_tree", "random_forest"):
+                    return adv.tree_model(work, sel, req.params or {},
+                                          kind="forest" if t == "random_forest" else "tree")
+                if t == "neural_network":
+                    return adv.neural_network(work, sel, req.params or {})
+
+                # Spatial methods: drop rows missing either the value or a
+                # coordinate, so weights and values always line up.
+                ok_xy, latc, lonc = adv.has_coordinates(work)
+                if not ok_xy:
+                    raise ValueError("This dataset has no latitude/longitude columns, so there is no geography to analyse.")
+
+                if t in ("morans_i", "gearys_c", "local_morans"):
+                    frame = work[[sel[0], latc, lonc]].apply(pd.to_numeric, errors="coerce").dropna()
+                    if len(frame) < 10:
+                        raise ValueError(f"Only {len(frame)} rows have both a value and coordinates (need 10+).")
+                    vals = frame[sel[0]].values.astype(float)
+                    coords = frame[[lonc, latc]].values.astype(float)
+                    W = adv.spatial_weights(coords, k=k)
+                    if t == "morans_i":    return adv.morans_i(vals, W)
+                    if t == "gearys_c":    return adv.gearys_c(vals, W)
+                    return adv.local_morans(vals, W, coords)
+
+                # GWR / spatial lag: y is the dependent, the rest are predictors.
+                dep = req.params.get("dependent") or sel[-1]
+                indep = [v for v in sel if v != dep]
+                if not indep:
+                    raise ValueError("Need at least one predictor besides the dependent variable.")
+                frame = work[[dep] + indep + [latc, lonc]].apply(pd.to_numeric, errors="coerce").dropna()
+                if len(frame) < 30:
+                    raise ValueError(f"Only {len(frame)} complete rows with coordinates (need 30+ for this method).")
+                y = frame[dep].values.astype(float)
+                X = frame[indep].values.astype(float)
+                coords = frame[[lonc, latc]].values.astype(float)
+
+                if t == "gwr":
+                    return adv.gwr(y, X, coords, indep, bandwidth=req.params.get("bandwidth"))
+                W = adv.spatial_weights(coords, k=k)
+                return adv.spatial_lag_model(y, X, W, indep)
+
+            except ValueError as e:
+                # These are our own, already-readable messages.
+                raise HTTPException(status_code=400, detail=str(e))
+
         else: raise HTTPException(status_code=400,detail=f"Unknown analysis: {t}")
     except HTTPException: raise
     except Exception as e: raise HTTPException(status_code=500,detail=f"Analysis error: {str(e)}\n{traceback.format_exc()}")
@@ -1787,6 +1968,286 @@ def _run_sql(con, sql, limit):
     except Exception:
         payload["total_rows"] = None
     return payload
+
+# ── Python notebook ───────────────────────────────────────────────────────────
+#
+# A minimal Jupyter-style execution endpoint. Cells share one namespace that
+# persists for the life of the server process, so `df = ...` in one cell is
+# visible in the next, exactly like a notebook kernel.
+#
+# SECURITY: this executes arbitrary Python with the server's privileges. That
+# is the whole point on a single-user desktop app -- it is the same trust model
+# as running Jupyter locally, and no worse than the user simply opening a
+# terminal. It is NOT safe on a shared or public deployment: anyone who can
+# reach the endpoint can read and write files as the server user. If Cartolith
+# is ever hosted for a class, this router must be disabled or sandboxed first.
+# The CARTOLITH_DISABLE_NOTEBOOK env var exists for exactly that.
+
+NOTEBOOK_DISABLED = os.environ.get("CARTOLITH_DISABLE_NOTEBOOK", "").lower() in ("1", "true", "yes")
+
+# The persistent kernel namespace.
+_nb_ns: Dict[str, Any] = {}
+
+def _nb_reset_namespace():
+    """Fresh namespace pre-populated with the things a student shouldn't have
+    to import by hand, plus live handles to everything they've loaded."""
+    ns: Dict[str, Any] = {"__name__": "__cartolith__"}
+    ns["pd"] = pd
+    ns["np"] = np
+    if HAS_GEOPANDAS: ns["gpd"] = gpd
+    if HAS_XARRAY:    ns["xr"] = xr
+    if HAS_RASTERIO:  ns["rasterio"] = rasterio
+    if HAS_MPL:
+        import matplotlib.pyplot as _plt
+        ns["plt"] = _plt
+    try:
+        import contextily as _ctx
+        ns["ctx"] = _ctx          # web basemap tiles: ctx.add_basemap(ax, ...)
+    except Exception:
+        pass                       # optional; the notebook still works without it
+
+    # Live views of the app's data. Mutating `datasets[...]` here really does
+    # change what the rest of the app sees, which is intended -- a notebook
+    # that can't feed results back to the map isn't much use.
+    ns["datasets"] = datasets
+    ns["vectors"] = vector_cache
+    ns["raster_paths"] = raster_cache
+    ns["netcdf_paths"] = netcdf_cache
+
+    def use(name: str):
+        """use('cities.csv') -> the DataFrame. Falls back to a fuzzy match so
+        students don't have to type the exact id."""
+        if name in datasets: return datasets[name]
+        hits = [k for k in datasets if name.lower() in k.lower()]
+        if len(hits) == 1: return datasets[hits[0]]
+        if not hits: raise KeyError(f"No dataset matching {name!r}. Loaded: {list(datasets)}")
+        raise KeyError(f"{name!r} is ambiguous: {hits}")
+
+    def publish(df, name: str):
+        """publish(df, 'my result') -> makes df available to the rest of the
+        app as a normal dataset (Explore, Cartography, SQL Lab...)."""
+        if not isinstance(df, pd.DataFrame):
+            raise TypeError("publish() expects a pandas DataFrame")
+        datasets[name] = df
+        return f"Published {name!r} ({len(df)} rows) -- reload the dataset list to see it."
+
+    def use_geo(name: str):
+        """use_geo('regions') -> GeoDataFrame with real geometry.
+
+        use() gives you the flattened table, which is what most analysis wants.
+        Mapping needs the actual shapes, which live here. Raises a clear error
+        rather than silently handing back a geometry-less frame.
+        """
+        if not HAS_GEOPANDAS:
+            raise RuntimeError("geopandas is not installed in this environment")
+        if name in vector_cache: return vector_cache[name]
+        hits = [k for k in vector_cache if name.lower() in k.lower()]
+        if len(hits) == 1: return vector_cache[hits[0]]
+        if not hits:
+            raise KeyError(
+                f"No dataset with geometry matching {name!r}. "
+                f"With geometry: {list(vector_cache)}. "
+                f"Loaded overall: {list(datasets)}."
+            )
+        raise KeyError(f"{name!r} is ambiguous: {hits}")
+
+    def use_grid(name: str):
+        """use_grid('precip.nc') -> xarray Dataset for a NetCDF/raster grid."""
+        if not HAS_XARRAY:
+            raise RuntimeError("xarray is not installed in this environment")
+        pool = {**netcdf_cache, **raster_cache}
+        key = name if name in pool else next((k for k in pool if name.lower() in k.lower()), None)
+        if key is None:
+            raise KeyError(f"No grid matching {name!r}. Grids loaded: {list(pool)}")
+        if key in netcdf_cache:
+            return _open_netcdf_safe(netcdf_cache[key])
+        return xr.open_dataset(raster_cache[key])
+
+    ns["use"] = use
+    ns["use_geo"] = use_geo
+    ns["use_grid"] = use_grid
+    ns["publish"] = publish
+    return ns
+
+_nb_ns = _nb_reset_namespace()
+
+class NotebookCell(BaseModel):
+    code: str
+
+class NotebookExport(BaseModel):
+    cells: List[Dict[str, Any]] = []
+    format: str = "ipynb"          # "ipynb" | "py"
+    name: Optional[str] = "cartolith-notebook"
+
+@app.get("/api/notebook/status")
+def notebook_status():
+    return {
+        "enabled": not NOTEBOOK_DISABLED,
+        "names": sorted([k for k in _nb_ns if not k.startswith("__")]),
+        "datasets": list(datasets.keys()),
+    }
+
+@app.post("/api/notebook/reset")
+def notebook_reset():
+    global _nb_ns
+    _nb_ns = _nb_reset_namespace()
+    return {"ok": True}
+
+@app.post("/api/notebook/execute")
+def notebook_execute(cell: NotebookCell):
+    """Run one cell. Returns stdout, the repr of the final expression (like
+    Jupyter), any matplotlib figure as a PNG, and a structured table when the
+    result is a DataFrame."""
+    if NOTEBOOK_DISABLED:
+        raise HTTPException(status_code=403, detail="Notebook execution is disabled on this server.")
+
+    import contextlib
+    out, err = io.StringIO(), io.StringIO()
+    result_repr, table, image_b64 = None, None, None
+
+    code = cell.code or ""
+    try:
+        # Mimic Jupyter: if the last statement is an expression, echo its value.
+        parsed = ast.parse(code)
+        last_expr = None
+        if parsed.body and isinstance(parsed.body[-1], ast.Expr):
+            last_expr = ast.Expression(parsed.body.pop().value)
+
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            if parsed.body:
+                exec(compile(parsed, "<cell>", "exec"), _nb_ns)
+            if last_expr is not None:
+                value = eval(compile(last_expr, "<cell>", "eval"), _nb_ns)
+                if value is not None:
+                    _nb_ns["_"] = value
+                    if isinstance(value, pd.DataFrame):
+                        head = value.head(200)
+                        table = {
+                            "columns": [str(c) for c in head.columns],
+                            "rows": json.loads(head.to_json(orient="values", default_handler=str)),
+                            "shape": list(value.shape),
+                        }
+                        result_repr = f"DataFrame {value.shape[0]} rows x {value.shape[1]} cols"
+                    else:
+                        result_repr = repr(value)
+                        if len(result_repr) > 20000:
+                            result_repr = result_repr[:20000] + "\n... (truncated)"
+
+            # Capture any open matplotlib figure, then close it so the next
+            # cell starts clean (otherwise figures silently accumulate).
+            if HAS_MPL:
+                import matplotlib.pyplot as _plt
+                if _plt.get_fignums():
+                    buf = io.BytesIO()
+                    _plt.savefig(buf, format="png", dpi=110, bbox_inches="tight")
+                    _plt.close("all")
+                    image_b64 = base64.b64encode(buf.getvalue()).decode()
+
+        return {"ok": True, "stdout": out.getvalue(), "stderr": err.getvalue(),
+                "result": result_repr, "table": table, "image_b64": image_b64}
+
+    except Exception:
+        # Show the student's own traceback, not our FastAPI frames.
+        tb = traceback.format_exc()
+        return {"ok": False, "stdout": out.getvalue(), "stderr": err.getvalue(),
+                "error": tb, "result": None, "table": None, "image_b64": None}
+
+@app.post("/api/notebook/export")
+def notebook_export(req: NotebookExport):
+    """Export the notebook as a real .ipynb or a plain .py script."""
+    cells = req.cells or []
+    safe = re.sub(r"[^A-Za-z0-9_.-]", "_", (req.name or "cartolith-notebook")).strip("_") or "notebook"
+
+    if req.format == "py":
+        lines = [
+            "#!/usr/bin/env python3",
+            '"""Exported from Cartolith.',
+            "",
+            "This runs outside Cartolith, so the session's loaded datasets are not",
+            "here. Point DATA_DIR at the folder holding your files and use() will",
+            "read them from disk instead; publish() just returns the frame.",
+            '"""',
+            "import os",
+            "import pandas as pd",
+            "import numpy as np",
+            "",
+            "try:",
+            "    import matplotlib.pyplot as plt",
+            "except ImportError:",
+            "    plt = None",
+            "",
+            "DATA_DIR = os.environ.get(\"DATA_DIR\", \".\")",
+            "",
+            "",
+            "def use(name):",
+            '    """Load a dataset by filename from DATA_DIR (Cartolith reads it from',
+            "    the running session instead).",
+            '    """',
+            "    path = name if os.path.isabs(name) else os.path.join(DATA_DIR, name)",
+            "    if not os.path.exists(path):",
+            "        raise FileNotFoundError(",
+            '            f"{path!r} not found. Set DATA_DIR or pass a full path."',
+            "        )",
+            "    if path.lower().endswith((\".csv\", \".txt\")):",
+            "        return pd.read_csv(path)",
+            "    if path.lower().endswith((\".xlsx\", \".xls\")):",
+            "        return pd.read_excel(path)",
+            "    if path.lower().endswith(\".parquet\"):",
+            "        return pd.read_parquet(path)",
+            "    import geopandas as gpd",
+            "    return gpd.read_file(path)",
+            "",
+            "",
+            "def publish(df, name=None):",
+            '    """No-op outside Cartolith — returns the frame unchanged."""',
+            "    return df",
+            "",
+            "",
+        ]
+        for c in cells:
+            src = (c.get("source") or "").rstrip()
+            if c.get("cell_type") == "markdown":
+                lines += [f"# {ln}" for ln in src.splitlines()] + [""]
+            elif src:
+                lines += [src, ""]
+        body = "\n".join(lines)
+        return StreamingResponse(
+            io.BytesIO(body.encode()), media_type="text/x-python",
+            headers={"Content-Disposition": f'attachment; filename="{safe}.py"'})
+
+    nb = {
+        "cells": [], "metadata": {
+            "kernelspec": {"display_name": "Python 3", "language": "python", "name": "python3"},
+            "language_info": {"name": "python", "version": platform.python_version()},
+        },
+        "nbformat": 4, "nbformat_minor": 5,
+    }
+    for i, c in enumerate(cells):
+        src = c.get("source") or ""
+        src_lines = src.splitlines(keepends=True)
+        cell_id = f"cell{i:03d}"   # nbformat >= 4.5 requires an id per cell
+        if c.get("cell_type") == "markdown":
+            nb["cells"].append({"cell_type": "markdown", "id": cell_id,
+                                "metadata": {}, "source": src_lines})
+        else:
+            outs = []
+            if c.get("stdout"):
+                outs.append({"output_type": "stream", "name": "stdout",
+                             "text": str(c["stdout"]).splitlines(keepends=True)})
+            if c.get("result"):
+                outs.append({"output_type": "execute_result", "execution_count": None,
+                             "metadata": {}, "data": {"text/plain": str(c["result"]).splitlines(keepends=True)}})
+            if c.get("image_b64"):
+                outs.append({"output_type": "display_data", "metadata": {},
+                             "data": {"image/png": c["image_b64"]}})
+            nb["cells"].append({"cell_type": "code", "id": cell_id, "execution_count": None,
+                                "metadata": {}, "outputs": outs, "source": src_lines})
+
+    payload = json.dumps(nb, indent=1).encode()
+    return StreamingResponse(
+        io.BytesIO(payload), media_type="application/x-ipynb+json",
+        headers={"Content-Disposition": f'attachment; filename="{safe}.ipynb"'})
+
 
 class SqlQuery(BaseModel):
     sql: str

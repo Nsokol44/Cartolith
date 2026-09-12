@@ -20,13 +20,21 @@ export default function LessonPanel({ open, onClose, activeTab, setActiveTab }) 
   const [stepIdx, setStepIdx] = useState(0)
   const [progress, setProgress] = useState(loadProgress)
   const [justAdvanced, setJustAdvanced] = useState(false)
+  // True when the step's condition was ALREADY satisfied the moment the step
+  // opened — e.g. the student had loaded data before starting the lesson. In
+  // that case we must not auto-advance (that was the bug that raced through
+  // every step); we show a "you've already done this" confirm instead.
+  const [preSatisfied, setPreSatisfied] = useState(false)
 
   // Context accumulated while a lesson runs: tabs opened, events fired.
   // Kept in a ref so recording into it never triggers a re-render, then
   // mirrored into state via `tick` when we actually need to re-evaluate.
   const ctxRef = useRef({ visited: new Set(), events: new Set() })
-  const [, setTick] = useState(0)
+  const [tick, setTick] = useState(0)
   const bump = useCallback(() => setTick(t => t + 1), [])
+  // Remembers which step we've already made the "was it pre-satisfied?"
+  // judgement for, so that judgement happens exactly once per step.
+  const stepInitRef = useRef({ key: null, pre: false })
 
   const lesson = lessonId ? lessonById(lessonId) : null
   const step = lesson?.steps[stepIdx] || null
@@ -44,33 +52,69 @@ export default function LessonPanel({ open, onClose, activeTab, setActiveTab }) 
     bump()
   }), [bump])
 
-  // The verification loop. Runs whenever state, the step, or context changes.
-  // Auto-advances rather than waiting for a click, so completing the work in
-  // the app is itself the interaction.
+  // The verification loop.
+  //
+  // Two rules keep this honest:
+  //   1. A step that was ALREADY satisfied when it opened never auto-advances.
+  //      Otherwise a student who had loaded data first would watch the lesson
+  //      skate through three steps without reading any of them.
+  //   2. A step marked `manual` never auto-advances — it's a read-and-think
+  //      step with nothing to verify.
+  // Everything else advances the moment the student's real work satisfies it.
   useEffect(() => {
     if (!lesson || !step) return
+    const key = `${lesson.id}:${stepIdx}`
+
     let ok = false
     try { ok = !!step.check(state, ctxRef.current) } catch { ok = false }
+
+    // First time we've seen this step: decide whether it started already done.
+    if (stepInitRef.current.key !== key) {
+      stepInitRef.current = { key, pre: ok }
+      setPreSatisfied(ok)
+      if (ok) return
+    }
+
+    if (stepInitRef.current.pre) return  // waiting on the student's Continue
+    if (step.manual) return              // nothing to verify
     if (!ok) return
 
     setJustAdvanced(true)
     const t = setTimeout(() => {
       setJustAdvanced(false)
-      if (stepIdx + 1 < lesson.steps.length) {
-        setStepIdx(i => i + 1)
-      } else {
-        setProgress(p => {
-          const next = { ...p, [lesson.id]: { done: true, at: Date.now() } }
-          saveProgress(next)
-          return next
-        })
-        setStepIdx(lesson.steps.length) // -> wrap-up screen
-      }
-    }, 900) // brief pause so the student sees the step tick off
+      advance()
+    }, 1100) // pause so the student sees the step tick off and reads the takeaway
     return () => clearTimeout(t)
-  }, [state, lesson, step, stepIdx])
+  }, [state, tick, lesson, step, stepIdx])
+
+  // Move forward one step (or to the wrap-up if this was the last).
+  function advance() {
+    if (!lesson) return
+    if (stepIdx + 1 < lesson.steps.length) {
+      setStepIdx(i => i + 1)
+    } else {
+      setProgress(p => {
+        const next = { ...p, [lesson.id]: { done: true, at: Date.now() } }
+        saveProgress(next)
+        return next
+      })
+      setStepIdx(lesson.steps.length) // -> wrap-up screen
+    }
+  }
+
+  // Step backwards. Clearing stepInitRef forces the step we land on to be
+  // re-judged for pre-satisfaction, so going back never triggers an instant
+  // auto-advance straight forward again.
+  function back() {
+    if (stepIdx === 0) return
+    stepInitRef.current = { key: null, pre: false }
+    setJustAdvanced(false)
+    setStepIdx(i => i - 1)
+  }
 
   function start(id) {
+    stepInitRef.current = { key: null, pre: false }
+    setJustAdvanced(false)
     setLessonId(id)
     setStepIdx(0)
     ctxRef.current = { visited: new Set([activeTab]), events: new Set() }
@@ -79,14 +123,16 @@ export default function LessonPanel({ open, onClose, activeTab, setActiveTab }) 
   }
 
   function exit() {
+    stepInitRef.current = { key: null, pre: false }
+    setJustAdvanced(false)
     setLessonId(null)
     setStepIdx(0)
   }
 
   function skip() {
-    if (!lesson) return
-    if (stepIdx + 1 < lesson.steps.length) setStepIdx(i => i + 1)
-    else setStepIdx(lesson.steps.length)
+    stepInitRef.current = { key: null, pre: false }
+    setJustAdvanced(false)
+    advance()
   }
 
   // Move the student to the tab a step happens on, but only on their click —
@@ -122,8 +168,11 @@ export default function LessonPanel({ open, onClose, activeTab, setActiveTab }) 
             stepIdx={stepIdx}
             activeTab={activeTab}
             justAdvanced={justAdvanced}
+            preSatisfied={preSatisfied}
             onGoToTab={goToStepTab}
             onSkip={skip}
+            onBack={back}
+            onContinue={() => { stepInitRef.current = { key: null, pre: false }; advance() }}
           />
         )}
 
@@ -166,7 +215,7 @@ function LessonList({ progress, onStart }) {
 }
 
 // ── running lesson ───────────────────────────────────────────────────────────
-function RunningLesson({ lesson, step, stepIdx, activeTab, justAdvanced, onGoToTab, onSkip }) {
+function RunningLesson({ lesson, step, stepIdx, activeTab, justAdvanced, preSatisfied, onGoToTab, onSkip, onBack, onContinue }) {
   const [hintOpen, setHintOpen] = useState(false)
   useEffect(() => { setHintOpen(false) }, [stepIdx])
 
@@ -200,6 +249,21 @@ function RunningLesson({ lesson, step, stepIdx, activeTab, justAdvanced, onGoToT
           </button>
         )}
 
+        {preSatisfied && !justAdvanced && (
+          <div style={S.alreadyBox}>
+            <div style={{ marginBottom: 8 }}>
+              Looks like you've already done this — read it over, then carry on.
+            </div>
+            <button style={S.continueBtn} onClick={onContinue}>Continue →</button>
+          </div>
+        )}
+
+        {step.manual && !preSatisfied && !justAdvanced && (
+          <button style={{ ...S.continueBtn, marginTop: 11 }} onClick={onContinue}>
+            Got it — continue →
+          </button>
+        )}
+
         {justAdvanced && (
           <div style={S.doneBanner}>
             ✓ Done — {step.takeaway}
@@ -208,8 +272,13 @@ function RunningLesson({ lesson, step, stepIdx, activeTab, justAdvanced, onGoToT
       </div>
 
       <div style={S.footRow}>
+        {stepIdx > 0 && (
+          <button style={{ ...S.linkBtn, color: 'var(--txt2)' }} onClick={onBack}>
+            ← Back
+          </button>
+        )}
         {step.hint && (
-          <button style={S.linkBtn} onClick={() => setHintOpen(h => !h)}>
+          <button style={{ ...S.linkBtn, marginLeft: stepIdx > 0 ? 12 : 0 }} onClick={() => setHintOpen(h => !h)}>
             {hintOpen ? 'Hide hint' : 'Stuck? Show hint'}
           </button>
         )}
@@ -293,6 +362,15 @@ const S = {
     marginTop: 10, background: 'var(--accent-dim)', border: '1px solid var(--accent)',
     color: 'var(--accent)', borderRadius: 'var(--r)', padding: '5px 10px',
     fontSize: 11.5, cursor: 'pointer', fontFamily: 'inherit',
+  },
+  alreadyBox: {
+    marginTop: 11, paddingTop: 10, borderTop: '1px solid var(--bdr)',
+    fontSize: 11.5, color: 'var(--txt2)', lineHeight: 1.55,
+  },
+  continueBtn: {
+    background: 'var(--accent-dim)', border: '1px solid var(--accent)', color: 'var(--accent)',
+    borderRadius: 'var(--r)', padding: '6px 12px', fontSize: 11.5, cursor: 'pointer',
+    fontFamily: 'inherit',
   },
   doneBanner: {
     marginTop: 10, fontSize: 11.5, color: 'var(--accent2)', lineHeight: 1.55,

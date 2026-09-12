@@ -521,6 +521,9 @@ export default function CartographyTab() {
           value_col: form.value_col || null, colormap: form.colormap,
           n_classes: form.n_classes, classification: form.classification,
           max_features: form.max_features, clip_bbox: form.use_clip ? form.clip_bbox : null,
+          // Without these the backend renders time step 0 regardless of which
+          // step the form is showing.
+          time_index: timeIdx, variable: form.variable || null,
         })
       }
 
@@ -693,11 +696,23 @@ export default function CartographyTab() {
                         if (layer.config.layer_type === 'vector') {
                           newData = await cartoApi.vector({ dataset_id: layer.config.dataset_id, value_col: layer.config.value_col||null, colormap: layer.config.colormap, n_classes: layer.config.n_classes, classification: layer.config.classification, max_features: layer.config.max_features })
                         } else {
-                          newData = await cartoApi.layer({ dataset_id: layer.config.dataset_id, layer_type: layer.config.layer_type, lat_col: layer.config.lat_col||null, lon_col: layer.config.lon_col||null, value_col: layer.config.value_col||null, colormap: layer.config.colormap, n_classes: layer.config.n_classes, classification: layer.config.classification, max_features: layer.config.max_features })
+                          newData = await cartoApi.layer({
+                            dataset_id: layer.config.dataset_id, layer_type: layer.config.layer_type,
+                            lat_col: layer.config.lat_col||null, lon_col: layer.config.lon_col||null,
+                            value_col: layer.config.value_col||null, colormap: layer.config.colormap,
+                            n_classes: layer.config.n_classes, classification: layer.config.classification,
+                            max_features: layer.config.max_features,
+                            // The entire point of moving the slider: without
+                            // time_index the backend re-renders step 0 every time.
+                            time_index: t, variable: layer.config.variable || null,
+                          })
                         }
-                        setLayers(ls => ls.map(l => l.id === layer.id ? { ...l, data: newData } : l))
+                        setLayers(ls => ls.map(l => l.id === layer.id ? { ...l, data: newData, error: null } : l))
                         renderLayer(layer.id, newData, layer.config)
-                      } catch {}
+                      } catch (err) {
+                        setLayers(ls => ls.map(l => l.id === layer.id
+                          ? { ...l, error: err.message || 'Could not load that time step' } : l))
+                      }
                     }}
                     style={{ width: '100%', marginTop: 2 }} />
                 </div>

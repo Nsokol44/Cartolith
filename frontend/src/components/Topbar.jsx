@@ -1,6 +1,6 @@
 import { useApp } from "../store"
 
-export const TABS = ["Explore", "Statistics", "Visualize", "Analyze", "Compare", "Cartography", "SQL Lab", "Geoprocess"]
+export const TABS = ["Explore", "Statistics", "Visualize", "Analyze", "Compare", "Cartography", "SQL Lab", "Geoprocess", "Notebook"]
 
 export default function Topbar({ activeTab, setActiveTab, onOpenLearn, onOpenLessons, lessonsOpen }) {
   const { state } = useApp()

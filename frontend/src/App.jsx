@@ -1,6 +1,7 @@
 import { useState, useEffect } from "react"
 import { AppProvider, useApp } from "./store"
 import LessonPanel from "./components/LessonPanel"
+import NotebookTab from "./components/NotebookTab"
 import { api } from "./api"
 import Topbar from "./components/Topbar"
 import Sidebar from "./components/Sidebar"
@@ -94,6 +95,7 @@ function AppInner() {
     Explore: <ExploreTab go={setActiveTab} />, Statistics: <StatisticsTab />, Visualize: <VisualizeTab />,
     Analyze: <AnalyzeTab />, Compare: <CompareTab />, Cartography: <CartographyTab />,
     "SQL Lab": <SqlLabTab go={setActiveTab} />, Geoprocess: <GeoprocessTab go={setActiveTab} />,
+    Notebook: <NotebookTab />,
   }
 
   return (

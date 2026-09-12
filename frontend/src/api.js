@@ -173,6 +173,15 @@ export const api = {
       body: JSON.stringify(payload),
     }),
 
+  // Which analyses can run on the current selection, and why not. Used to
+  // gate the UI before the user clicks rather than failing afterwards.
+  analysisCapabilities: (payload) =>
+    request('/api/analyze/capabilities', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    }),
+
   chartData: (payload) =>
     request('/api/chart-data', {
       method: 'POST',
@@ -346,4 +355,35 @@ export const samplesApi = {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ id }),
     }),
+}
+
+// ── Python notebook ─────────────────────────────────────────────────────────
+export const notebookApi = {
+  status: () => request('/api/notebook/status'),
+
+  execute: (code) => request('/api/notebook/execute', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ code }),
+  }),
+
+  reset: () => request('/api/notebook/reset', { method: 'POST' }),
+
+  // Export streams a file back, so this bypasses request() (which parses JSON)
+  // and triggers a browser download directly.
+  download: async (cells, format, name) => {
+    const res = await fetch(`${getBase()}/api/notebook/export`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ cells, format, name }),
+    })
+    if (!res.ok) throw new Error(`Export failed (${res.status})`)
+    const blob = await res.blob()
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `${(name || 'cartolith-notebook').replace(/[^A-Za-z0-9_.-]/g, '_')}.${format}`
+    document.body.appendChild(a)
+    a.click()
+    a.remove()
+    URL.revokeObjectURL(url)
+  },
 }

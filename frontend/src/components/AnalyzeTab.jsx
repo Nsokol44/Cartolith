@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { useApp } from '../store'
 import { api } from '../api'
 import ExportPanel from './ExportPanel'
@@ -15,7 +15,21 @@ const ANALYSES = [
   { id: 'cluster', label: 'K-Means Clustering', desc: 'Cluster data points (scikit-learn)', minVars: 2, allowCross: true },
   { id: 'timeseries', label: 'Time Series Decomp.', desc: 'Trend/seasonal/residual decomposition (statsmodels)', minVars: 1, allowCross: false },
   { id: 'join', label: 'Join Datasets', desc: 'Merge two datasets on a shared key', minVars: 0, allowCross: false, special: 'join' },
+
+  // ── Machine learning ──
+  { id: 'decision_tree', label: 'Decision Tree', desc: 'Readable if/then rules; auto-detects classify vs predict', minVars: 2, allowCross: true, group: 'Machine learning' },
+  { id: 'random_forest', label: 'Random Forest', desc: 'Many trees combined, with variable importance', minVars: 2, allowCross: true, group: 'Machine learning' },
+  { id: 'neural_network', label: 'Neural Network', desc: 'Multi-layer perceptron for non-linear patterns', minVars: 2, allowCross: true, group: 'Machine learning' },
+
+  // ── Spatial statistics (need coordinates) ──
+  { id: 'morans_i', label: "Moran's I", desc: 'Global test: is this variable clustered in space?', minVars: 1, allowCross: false, group: 'Spatial statistics' },
+  { id: 'gearys_c', label: "Geary's C", desc: 'Clustering test, more sensitive to local contrast', minVars: 1, allowCross: false, group: 'Spatial statistics' },
+  { id: 'local_morans', label: "Local Moran's I (LISA)", desc: 'Where the clusters and spatial outliers actually are', minVars: 1, allowCross: false, group: 'Spatial statistics' },
+  { id: 'gwr', label: 'Geographically Weighted Regression', desc: 'A separate regression at every location', minVars: 2, allowCross: false, group: 'Spatial statistics' },
+  { id: 'spatial_lag', label: 'Spatial Lag Model', desc: 'Regression accounting for spillover between neighbours', minVars: 2, allowCross: false, group: 'Spatial statistics' },
 ]
+
+const GROUPS = [null, 'Machine learning', 'Spatial statistics']
 
 function fmt(v) {
   if (v == null) return '—'
@@ -31,9 +45,270 @@ function pSig(p) {
   return ''
 }
 
+// ── advanced-method result views ────────────────────────────────────────────
+function Interpretation({ text }) {
+  if (!text) return null
+  // Every advanced method returns a plain-language reading of its own output.
+  // Surfacing it first is the point: the numbers mean nothing to a student who
+  // does not already know how to read them.
+  return (
+    <div className="card" style={{ marginBottom: 12, borderLeft: '3px solid var(--accent2)' }}>
+      <div style={{ fontSize: 10, textTransform: 'uppercase', letterSpacing: '0.7px',
+                    color: 'var(--txt3)', marginBottom: 6 }}>What this means</div>
+      <div style={{ fontSize: 12.5, color: 'var(--txt)', lineHeight: 1.65 }}>{text}</div>
+    </div>
+  )
+}
+
+function Metrics({ items }) {
+  return (
+    <div className="grid-3" style={{ marginBottom: 12 }}>
+      {items.filter(([, v]) => v != null).map(([label, v, sub]) => (
+        <div key={label} className="metric">
+          <div className="metric-label">{label}</div>
+          <div className="metric-val">{typeof v === 'number' ? fmt(v) : v}</div>
+          {sub && <div className="metric-sub">{sub}</div>}
+        </div>
+      ))}
+    </div>
+  )
+}
+
+function ImportanceBars({ importances }) {
+  const entries = Object.entries(importances || {}).sort((a, b) => (b[1] || 0) - (a[1] || 0))
+  const max = Math.max(...entries.map(e => e[1] || 0), 0.0001)
+  return (
+    <div className="card" style={{ marginBottom: 12 }}>
+      <div style={{ fontSize: 12, color: 'var(--txt)', marginBottom: 9 }}>Variable importance</div>
+      {entries.map(([name, v]) => (
+        <div key={name} style={{ marginBottom: 7 }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11, marginBottom: 3 }}>
+            <span style={{ color: 'var(--txt2)' }}>{name}</span>
+            <span style={{ color: 'var(--txt3)', fontFamily: 'var(--font-mono)' }}>{((v || 0) * 100).toFixed(1)}%</span>
+          </div>
+          <div style={{ height: 5, background: 'var(--bg3)', borderRadius: 3, overflow: 'hidden' }}>
+            <div style={{ width: `${((v || 0) / max) * 100}%`, height: '100%', background: 'var(--accent2)' }} />
+          </div>
+        </div>
+      ))}
+    </div>
+  )
+}
+
+const LISA_COLORS = { HH: '#ef4444', LL: '#3b82f6', HL: '#f59e0b', LH: '#22d3ee', ns: '#475569' }
+const LISA_LABELS = {
+  HH: 'High-High (hot spot)', LL: 'Low-Low (cold spot)',
+  HL: 'High-Low (outlier)', LH: 'Low-High (outlier)', ns: 'Not significant',
+}
+
+function AdvancedResult({ result }) {
+  const t = result.type
+
+  if (t === 'morans_i' || t === 'gearys_c') {
+    const stat = t === 'morans_i' ? result.I : result.C
+    const expected = t === 'morans_i' ? result.expected_I : result.expected_C
+    return (
+      <div className="fade-in">
+        <Interpretation text={result.interpretation} />
+        <Metrics items={[
+          [t === 'morans_i' ? "Moran's I" : "Geary's C", stat],
+          ['Expected (no pattern)', expected],
+          ['p-value', result.p_value, result.p_value < 0.05 ? 'significant' : 'not significant'],
+          ['n', result.n],
+          ['Permutations', result.permutations],
+        ]} />
+      </div>
+    )
+  }
+
+  if (t === 'local_morans') {
+    const total = Object.values(result.counts || {}).reduce((a, b) => a + b, 0) || 1
+    return (
+      <div className="fade-in">
+        <Interpretation text={result.interpretation} />
+        <div className="card" style={{ marginBottom: 12 }}>
+          <div style={{ fontSize: 12, color: 'var(--txt)', marginBottom: 10 }}>Cluster types</div>
+          {Object.entries(LISA_LABELS).map(([k, label]) => (
+            <div key={k} style={{ display: 'flex', alignItems: 'center', gap: 9, marginBottom: 6 }}>
+              <span style={{ width: 11, height: 11, borderRadius: 2, background: LISA_COLORS[k], flexShrink: 0 }} />
+              <span style={{ fontSize: 11.5, color: 'var(--txt2)', flex: 1 }}>{label}</span>
+              <span style={{ fontSize: 11.5, fontFamily: 'var(--font-mono)', color: 'var(--txt)' }}>
+                {result.counts?.[k] ?? 0}
+              </span>
+              <span style={{ fontSize: 10, color: 'var(--txt3)', width: 44, textAlign: 'right' }}>
+                {(((result.counts?.[k] ?? 0) / total) * 100).toFixed(0)}%
+              </span>
+            </div>
+          ))}
+        </div>
+        {result.truncated && (
+          <div style={{ fontSize: 11, color: 'var(--txt3)' }}>
+            Showing the first {result.locations?.length} locations; the dataset is larger.
+          </div>
+        )}
+      </div>
+    )
+  }
+
+  if (t === 'gwr') {
+    return (
+      <div className="fade-in">
+        <Interpretation text={result.interpretation} />
+        <Metrics items={[
+          ['Global R²', result.global_r_squared],
+          ['Mean local R²', result.local_r2_mean],
+          ['Bandwidth', result.bandwidth],
+          ['n', result.n],
+        ]} />
+        <div className="card">
+          <div style={{ fontSize: 12, color: 'var(--txt)', marginBottom: 9 }}>
+            How each coefficient varies across space
+          </div>
+          <div style={{ overflowX: 'auto' }}>
+            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11.5 }}>
+              <thead>
+                <tr style={{ color: 'var(--txt3)' }}>
+                  {['Variable', 'Min', 'Mean', 'Max', 'Std', 'Reverses?'].map(h => (
+                    <th key={h} style={{ textAlign: h === 'Variable' ? 'left' : 'right',
+                                         padding: '5px 8px', borderBottom: '1px solid var(--bdr2)', fontWeight: 400 }}>{h}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {Object.entries(result.coefficient_summary || {}).map(([name, v]) => (
+                  <tr key={name} style={{ borderBottom: '1px solid var(--bdr)' }}>
+                    <td style={{ padding: '5px 8px', color: 'var(--txt)' }}>{name}</td>
+                    {['min', 'mean', 'max', 'std'].map(k => (
+                      <td key={k} style={{ padding: '5px 8px', textAlign: 'right',
+                                           fontFamily: 'var(--font-mono)', color: 'var(--txt2)' }}>{fmt(v[k])}</td>
+                    ))}
+                    <td style={{ padding: '5px 8px', textAlign: 'right',
+                                 color: v.changes_sign ? 'var(--accent3)' : 'var(--txt3)' }}>
+                      {v.changes_sign ? 'yes' : 'no'}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    )
+  }
+
+  if (t === 'spatial_lag') {
+    return (
+      <div className="fade-in">
+        <Interpretation text={result.interpretation} />
+        <Metrics items={[
+          ['ρ (spatial lag)', result.rho, 'neighbour spillover'],
+          ['ρ t-stat', result.rho_t_stat],
+          ['Pseudo R²', result.pseudo_r_squared],
+          ['Plain OLS R²', result.ols_r_squared, 'for comparison'],
+          ['n', result.n],
+        ]} />
+        <div className="card">
+          <div style={{ fontSize: 12, color: 'var(--txt)', marginBottom: 9 }}>
+            Coefficients — spatial model vs plain OLS
+          </div>
+          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11.5 }}>
+            <thead>
+              <tr style={{ color: 'var(--txt3)' }}>
+                {['Variable', 'Spatial', 'Std err', 't', 'OLS'].map(h => (
+                  <th key={h} style={{ textAlign: h === 'Variable' ? 'left' : 'right',
+                                       padding: '5px 8px', borderBottom: '1px solid var(--bdr2)', fontWeight: 400 }}>{h}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {Object.entries(result.coefficients || {}).map(([name, c]) => (
+                <tr key={name} style={{ borderBottom: '1px solid var(--bdr)' }}>
+                  <td style={{ padding: '5px 8px', color: 'var(--txt)' }}>{name}</td>
+                  <td style={{ padding: '5px 8px', textAlign: 'right', fontFamily: 'var(--font-mono)', color: 'var(--txt)' }}>{fmt(c.coef)}</td>
+                  <td style={{ padding: '5px 8px', textAlign: 'right', fontFamily: 'var(--font-mono)', color: 'var(--txt3)' }}>{fmt(c.std_err)}</td>
+                  <td style={{ padding: '5px 8px', textAlign: 'right', fontFamily: 'var(--font-mono)', color: 'var(--txt2)' }}>{fmt(c.t_stat)}</td>
+                  <td style={{ padding: '5px 8px', textAlign: 'right', fontFamily: 'var(--font-mono)', color: 'var(--txt3)' }}>{fmt(result.ols_coefficients?.[name])}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          <div style={{ fontSize: 10.5, color: 'var(--txt3)', marginTop: 8, lineHeight: 1.5 }}>
+            Where the two columns diverge, plain OLS was crediting the predictor with an effect that
+            was really spillover from neighbouring places.
+          </div>
+        </div>
+      </div>
+    )
+  }
+
+  if (t === 'decision_tree' || t === 'random_forest' || t === 'neural_network') {
+    const clf = result.task === 'classification'
+    return (
+      <div className="fade-in">
+        <Interpretation text={result.interpretation} />
+        <Metrics items={clf
+          ? [['Accuracy', result.accuracy != null ? `${(result.accuracy * 100).toFixed(1)}%` : null],
+             ['Baseline', result.baseline_accuracy != null ? `${(result.baseline_accuracy * 100).toFixed(1)}%` : null, 'always guess commonest'],
+             ['Target', result.target], ['Train / test', `${result.n_train} / ${result.n_test}`]]
+          : [['R² (test)', result.r_squared], ['MAE', result.mae], ['RMSE', result.rmse],
+             ['Target', result.target], ['Train / test', `${result.n_train} / ${result.n_test}`]]} />
+
+        {result.importances && <ImportanceBars importances={result.importances} />}
+
+        {result.confusion_matrix && (
+          <div className="card" style={{ marginBottom: 12 }}>
+            <div style={{ fontSize: 12, color: 'var(--txt)', marginBottom: 8 }}>Confusion matrix</div>
+            <table style={{ borderCollapse: 'collapse', fontSize: 11.5 }}>
+              <tbody>
+                {result.confusion_matrix.map((row, i) => (
+                  <tr key={i}>
+                    <td style={{ padding: '4px 8px', color: 'var(--txt3)', fontSize: 10 }}>
+                      actual {result.classes?.[i] ?? i}
+                    </td>
+                    {row.map((v, j) => (
+                      <td key={j} style={{ padding: '4px 10px', textAlign: 'center', fontFamily: 'var(--font-mono)',
+                                           color: i === j ? 'var(--accent2)' : 'var(--txt2)',
+                                           background: i === j ? 'rgba(129,140,248,0.08)' : 'transparent' }}>{v}</td>
+                    ))}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            <div style={{ fontSize: 10, color: 'var(--txt3)', marginTop: 6 }}>
+              Rows are the true class, columns the predicted one. The diagonal is correct predictions.
+            </div>
+          </div>
+        )}
+
+        {result.rules && (
+          <div className="card">
+            <div style={{ fontSize: 12, color: 'var(--txt)', marginBottom: 8 }}>
+              Learned rules <span style={{ color: 'var(--txt3)', fontSize: 10.5 }}>(top levels)</span>
+            </div>
+            <pre style={{ margin: 0, fontFamily: 'var(--font-mono)', fontSize: 10.5, lineHeight: 1.5,
+                          color: 'var(--txt2)', whiteSpace: 'pre-wrap', overflowX: 'auto' }}>{result.rules}</pre>
+          </div>
+        )}
+
+        {result.converged === false && (
+          <div className="result-box" style={{ marginTop: 10 }}>
+            Training hit its iteration limit without converging — the numbers above are provisional.
+          </div>
+        )}
+      </div>
+    )
+  }
+
+  return null
+}
+
 function ResultView({ result, analysisType }) {
   if (!result) return null
   if (result.error) return <div className="error-box">{result.error}</div>
+
+  const ADVANCED = ['morans_i','gearys_c','local_morans','gwr','spatial_lag',
+                    'decision_tree','random_forest','neural_network']
+  if (ADVANCED.includes(result.type)) return <AdvancedResult result={result} />
 
   if (analysisType === 'describe') {
     return (
@@ -336,6 +611,9 @@ export default function AnalyzeTab() {
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState(null)
   const [depVar, setDepVar] = useState('')
+  // Per-analysis eligibility from the backend, so the UI can explain what will
+  // and will not run BEFORE the user clicks, instead of after it fails.
+  const [caps, setCaps] = useState(null)
 
   const ds = state.activeDataset ? state.datasets[state.activeDataset] : null
   const datasets = Object.values(state.datasets)
@@ -344,6 +622,25 @@ export default function AnalyzeTab() {
 
   const sidebarVars = state.selectedVars
   const effectiveVars = varMode === 'sidebar' ? sidebarVars : manualVars
+
+  // Ask the backend what is runnable on the current selection. Re-runs
+  // whenever the variables or dataset change.
+  useEffect(() => {
+    const variables = effectiveVars.map(v =>
+      v.datasetId !== state.activeDataset ? `${v.datasetId}::${v.column}` : v.column
+    )
+    const datasetIds = [...new Set(effectiveVars.map(v => v.datasetId))]
+    if (datasetIds.length === 0 && state.activeDataset) datasetIds.push(state.activeDataset)
+    if (!datasetIds.length) { setCaps(null); return }
+
+    let cancelled = false
+    api.analysisCapabilities({ dataset_ids: datasetIds, variables })
+      .then(r => { if (!cancelled) setCaps(r) })
+      .catch(() => { if (!cancelled) setCaps(null) })   // older backend: fall back to no gating
+    return () => { cancelled = true }
+  }, [JSON.stringify(effectiveVars), state.activeDataset])
+
+  const capFor = (id) => caps?.analyses?.[id] || null
 
   async function runAnalysis() {
     if (!state.activeDataset && analysisType !== 'join') return
@@ -382,7 +679,26 @@ export default function AnalyzeTab() {
       {/* Analysis selector */}
       <div style={{ width: 200, flexShrink: 0, borderRight: '1px solid var(--bdr)', padding: 12, overflowY: 'auto', background: 'var(--bg2)' }}>
         <div className="section-title">Analysis type</div>
-        {ANALYSES.map(a => (
+        {caps && (
+          <div style={{ fontSize: 10, color: 'var(--txt3)', marginBottom: 8, lineHeight: 1.5 }}>
+            {caps.has_coordinates
+              ? '✓ Coordinates found — spatial methods available'
+              : 'No coordinates in this dataset — spatial methods unavailable'}
+          </div>
+        )}
+        {GROUPS.map(group => {
+          const items = ANALYSES.filter(a => (a.group || null) === group)
+          if (!items.length) return null
+          return (
+            <div key={group || 'core'} style={{ marginBottom: 10 }}>
+              {group && (
+                <div style={{ fontSize: 9.5, textTransform: 'uppercase', letterSpacing: '0.7px',
+                              color: 'var(--txt3)', margin: '12px 0 5px' }}>{group}</div>
+              )}
+              {items.map(a => {
+          const cap = capFor(a.id)
+          const blocked = cap && cap.ok === false
+          return (
           <div
             key={a.id}
             onClick={() => { setAnalysisType(a.id); setResult(null); setError(null) }}
@@ -390,12 +706,25 @@ export default function AnalyzeTab() {
               padding: '7px 9px', borderRadius: 'var(--r)', cursor: 'pointer', marginBottom: 3,
               background: analysisType === a.id ? 'var(--accent2-dim)' : 'transparent',
               border: `1px solid ${analysisType === a.id ? 'rgba(129,140,248,0.3)' : 'transparent'}`,
+              opacity: blocked && analysisType !== a.id ? 0.55 : 1,
             }}
           >
-            <div style={{ fontSize: 12, color: analysisType === a.id ? 'var(--accent2)' : 'var(--txt)', fontWeight: 500 }}>{a.label}</div>
+            <div style={{ fontSize: 12, fontWeight: 500,
+                          color: analysisType === a.id ? 'var(--accent2)'
+                               : blocked ? 'var(--txt3)' : 'var(--txt)' }}>
+              {a.label}
+            </div>
             <div style={{ fontSize: 10, color: 'var(--txt3)', marginTop: 2, lineHeight: 1.4 }}>{a.desc}</div>
+            {blocked && (
+              <div style={{ fontSize: 9.5, color: 'var(--accent3)', marginTop: 4, lineHeight: 1.45 }}>
+                {cap.reason}
+              </div>
+            )}
           </div>
-        ))}
+          )})}
+            </div>
+          )
+        })}
       </div>
 
       {/* Config + results */}
@@ -492,10 +821,20 @@ export default function AnalyzeTab() {
               </div>
             )}
 
-            <div style={{ marginLeft: 'auto', alignSelf: 'flex-end' }}>
-              <button className="btn primary" onClick={runAnalysis} disabled={loading}>
+            <div style={{ marginLeft: 'auto', alignSelf: 'flex-end', textAlign: 'right' }}>
+              <button
+                className="btn primary"
+                onClick={runAnalysis}
+                disabled={loading || (analysisType !== 'join' && capFor(analysisType)?.ok === false)}
+                title={analysisType !== 'join' ? capFor(analysisType)?.reason || '' : ''}
+              >
                 {loading ? <><div className="spinner" />Running…</> : `Run ${analysis?.label || ''}`}
               </button>
+              {analysisType !== 'join' && capFor(analysisType)?.ok === false && (
+                <div style={{ fontSize: 10.5, color: 'var(--accent3)', marginTop: 5, maxWidth: 260 }}>
+                  {capFor(analysisType).reason} {capFor(analysisType).fix}
+                </div>
+              )}
             </div>
           </div>
 

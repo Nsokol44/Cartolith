@@ -7,6 +7,10 @@
 // step only completes when the work is genuinely done. A student can't click
 // "next" past a concept they haven't touched.
 //
+// A step may set `manual: true` when there is nothing to verify (a
+// read-and-think step). Manual steps never auto-advance; the student clicks
+// Continue. Give them check: () => false so nothing else trips them.
+//
 // Adding a lesson: append to LESSONS. Nothing else needs to change; the panel
 // reads this file. Keep steps small (one action each) and write check() so it
 // is true for ANY reasonable way of doing the step, not just one exact path —
@@ -139,7 +143,8 @@ export const LESSONS = [
           'Your layer lined up with the basemap without you doing anything. That is a coordinate reference ' +
           'system doing quiet work. Open the "?" beside this step to read why that is not automatic in general.',
         hint: 'No action needed — just read the CRS concept, then continue.',
-        check: () => true,
+        manual: true,   // read-and-think step: nothing to verify, student confirms
+        check: () => false,
         takeaway:
           'Coordinates are meaningless without a CRS. Layers align only when they agree on one — here, EPSG:4326.',
       },
@@ -201,6 +206,161 @@ export const LESSONS = [
   },
 
   {
+    id: 'python-cartography',
+    title: 'Making maps in Python',
+    topic: 'Cartography',
+    minutes: 14,
+    blurb:
+      'Build a map in code: basemap, layered data, and the choices — projection, resolution — that quietly decide what it shows.',
+    intro:
+      'The Cartography tab makes one kind of map quickly. Code makes any kind of map repeatably, and forces you ' +
+      'to state choices the GUI makes silently on your behalf. That is the real reason to learn this: not speed, ' +
+      'but seeing what a map is actually asserting.',
+    concepts: ['projection', 'web_mercator', 'basemap', 'layer_order', 'spatial_resolution', 'temporal_resolution'],
+    steps: [
+      {
+        title: 'Get shapes, not just a table',
+        tab: 'Notebook',
+        concept: 'geometry',
+        instruction:
+          "In the Notebook, run: gdf = use_geo('World regions') then gdf.crs\n\n" +
+          'use() gives you the flattened table; use_geo() gives the GeoDataFrame with real geometry. ' +
+          'Only the second one can be drawn.',
+        hint: "use_geo('World regions'). If it complains, the error lists which datasets carry geometry.",
+        check: has.event('notebook:ran'),
+        takeaway:
+          'Mapping needs geometry objects, not lat/lon columns. gdf.crs tells you which reference frame they are in.',
+      },
+      {
+        title: 'Draw it, then look at the axes',
+        tab: 'Notebook',
+        concept: 'crs',
+        instruction:
+          'Run: ax = gdf.plot(figsize=(9, 6), edgecolor="white", linewidth=0.4)\n\n' +
+          'Now read the axis numbers. They run roughly -180 to 180 and -90 to 90 — those are degrees, ' +
+          'not metres. You are looking at unprojected geographic coordinates.',
+        hint: 'geopandas plots straight to matplotlib; the figure is captured automatically.',
+        check: has.event('notebook:ran'),
+        takeaway:
+          'Plotting raw lat/lon degrees is the "plate carrée" look: simple, but it stretches everything ' +
+          'horizontally the further you get from the equator.',
+      },
+      {
+        title: 'Reproject, and watch the shape change',
+        tab: 'Notebook',
+        concept: 'projection',
+        instruction:
+          'Run: gdf.to_crs(epsg=3857).plot(figsize=(9, 6))\n\n' +
+          'Same data, different projection. Compare it to the previous figure — the high-latitude areas ' +
+          'have visibly inflated. Nothing about the data changed; only the flattening did.',
+        hint: 'to_crs() returns a new GeoDataFrame — it does not modify the original.',
+        check: has.event('notebook:ran'),
+        takeaway:
+          'Projection is a choice with consequences. Web Mercator preserves shape and angle but badly ' +
+          'distorts area — never compute area in it.',
+      },
+      {
+        title: 'Add a basemap',
+        tab: 'Notebook',
+        concept: 'web_mercator',
+        instruction:
+          'Run:\n\n' +
+          'm = gdf.to_crs(epsg=3857)\n' +
+          'ax = m.plot(figsize=(9, 6), alpha=0.6, edgecolor="white")\n' +
+          'ctx.add_basemap(ax, source=ctx.providers.CartoDB.Positron)\n' +
+          'ax.set_axis_off()\n\n' +
+          'The reprojection to 3857 is not optional — tiles are served in Web Mercator, so your data ' +
+          'must be there too or nothing lines up.',
+        hint: 'contextily is imported as ctx. Try ctx.providers.CartoDB.DarkMatter or .Esri.WorldImagery too.',
+        check: has.event('notebook:ran'),
+        takeaway:
+          'Basemaps are context, not evidence. A quiet one (Positron) keeps attention on your data; ' +
+          'satellite imagery competes with it.',
+      },
+      {
+        title: 'Stack layers deliberately',
+        tab: 'Notebook',
+        concept: 'layer_order',
+        instruction:
+          'Draw two datasets on one axis by passing ax= to the second plot:\n\n' +
+          'ax = regions.to_crs(3857).plot(figsize=(9, 6), color="#cbd5e1", edgecolor="white")\n' +
+          'cities.to_crs(3857).plot(ax=ax, color="crimson", markersize=18)\n' +
+          'ctx.add_basemap(ax, source=ctx.providers.CartoDB.Positron)\n\n' +
+          'Then swap the two lines and re-run. The polygons now cover the points entirely.',
+        hint: 'Build cities with use_geo(), or from lat/lon via gpd.points_from_xy(df.lon, df.lat).',
+        check: has.event('notebook:ran'),
+        takeaway:
+          'Matplotlib draws in call order: first call is the bottom layer. Polygons, then lines, then ' +
+          'points, then labels — biggest to smallest, or things disappear.',
+      },
+      {
+        title: 'Match the map type to the data',
+        tab: 'Notebook',
+        instruction:
+          'The data type decides the map type. Try a choropleth on a numeric column:\n\n' +
+          'regions.to_crs(3857).plot(column="market_tier", legend=True, cmap="viridis", scheme="quantile")\n\n' +
+          'Points with a size or colour encoding become a proportional-symbol map; a raster becomes a ' +
+          'continuous surface. Choropleths only make sense on polygons, and only for rates or densities — ' +
+          'never raw counts, which just re-draw population.',
+        hint: 'scheme= needs mapclassify. Drop it to get a plain continuous colour ramp.',
+        check: has.event('notebook:ran'),
+        takeaway:
+          'Polygons → choropleth. Points → symbols sized or coloured by value. Grids → continuous surface. ' +
+          'Mapping a raw count as a choropleth is the single most common mapping error.',
+      },
+      {
+        title: 'Map a grid, and confront resolution',
+        tab: 'Notebook',
+        concept: 'spatial_resolution',
+        instruction:
+          'If you have a NetCDF loaded, run:\n\n' +
+          "ds = use_grid('your_file.nc')\n" +
+          'ds\n\n' +
+          'Read the dimensions. Cell size sets the smallest real feature the data can show, and the time ' +
+          'step sets the fastest change it can capture. Both are hard ceilings on what your map can claim.',
+        hint: 'use_grid() returns an xarray Dataset. Printing it shows dims, coords and variables.',
+        check: (state, ctx) => ctx.events.has('notebook:ran'),
+        takeaway:
+          'A 4 km grid cannot describe one field; a monthly mean cannot describe one storm. Resolution ' +
+          'is the limit on the questions your data is entitled to answer.',
+      },
+      {
+        title: 'Think about the time axis',
+        tab: 'Notebook',
+        concept: 'temporal_resolution',
+        instruction:
+          'Compare one moment against a long-run mean:\n\n' +
+          'v = ds[list(ds.data_vars)[0]]\n' +
+          'v.isel(time=0).plot()      # a single time step\n' +
+          'v.mean(dim="time").plot()  # averaged across all of them\n\n' +
+          'The mean is smoother and hides extremes. Neither is more correct — they answer different questions.',
+        hint: 'Run these as two separate cells so you get two figures rather than one overplotted mess.',
+        check: has.event('notebook:ran'),
+        takeaway:
+          'Averaging trades detail for stability. Always say which you mapped — "July 2019" and ' +
+          '"1979–2024 mean" are different claims about the world.',
+      },
+      {
+        title: 'Export the map and the method',
+        tab: 'Notebook',
+        instruction:
+          'Save the figure with plt.savefig("map.png", dpi=200, bbox_inches="tight"), then use ' +
+          'Export .ipynb to download the whole notebook. The image alone is a claim; the notebook is ' +
+          'the evidence for it.',
+        manual: true,
+        check: () => false,
+        takeaway:
+          'A published map should be reproducible: the code that made it, the CRS it used, and the ' +
+          'time window it covers should all be recoverable by someone else.',
+      },
+    ],
+    wrapUp:
+      'Every map you just made encoded decisions a reader never sees: a projection, a resolution, a time ' +
+      'window, a layer order, a classification. Naming those in a caption is not pedantry — it is the ' +
+      'difference between a map that informs and one that merely persuades.',
+  },
+
+  {
     id: 'sql-questions',
     title: 'Asking questions with SQL',
     topic: 'Analysis',
@@ -245,6 +405,66 @@ export const LESSONS = [
     ],
     wrapUp:
       'SQL is the point where your analysis becomes reproducible. A saved query is a methods section that runs.',
+  },
+
+  {
+    id: 'notebook-basics',
+    title: 'Scripting your analysis',
+    topic: 'Analysis',
+    minutes: 7,
+    blurb: 'Drop into Python when the buttons run out — and take your work with you as a real notebook.',
+    intro:
+      'Clicking is fine until you need to do the same thing forty times, or do something no button does. ' +
+      'The Notebook tab is the escape hatch: the same datasets, reachable as pandas DataFrames.',
+    concepts: ['dataset'],
+    steps: [
+      {
+        title: 'Open the Notebook',
+        tab: 'Notebook',
+        instruction:
+          'Switch to the Notebook tab. Cells share one Python session, so a variable you define in one ' +
+          'cell is still there in the next — exactly like Jupyter.',
+        hint: 'Notebook is the last item in the top navigation bar.',
+        check: has.visited('Notebook'),
+        takeaway: 'The notebook is a live Python session sitting next to your data.',
+      },
+      {
+        title: 'Pull in a dataset',
+        tab: 'Notebook',
+        instruction:
+          "Run a cell using use('...') with one of your loaded dataset names — for example " +
+          "df = use('World cities') then df.head(). pandas, numpy and matplotlib are already imported.",
+        hint: 'Press ⌘/Ctrl + Enter to run the cell you are editing.',
+        check: has.event('notebook:ran'),
+        takeaway:
+          'use() hands you the same data the rest of the app is using — no exporting and re-importing.',
+      },
+      {
+        title: 'Send a result back',
+        tab: 'Notebook',
+        instruction:
+          'Compute something — a filter, a groupby, a new column — then call ' +
+          "publish(result, 'my result'). It becomes a normal dataset you can map in Cartography.",
+        hint: "publish() takes a DataFrame and a name: publish(df[df['pop'] > 1e6], 'big cities')",
+        check: has.event('notebook:published'),
+        takeaway:
+          'Python and the GUI are two views of one session. Analysis can move freely between them.',
+      },
+      {
+        title: 'Export your work',
+        tab: 'Notebook',
+        instruction:
+          'Use "Export .ipynb" to download a real Jupyter notebook, or "Export .py" for a plain script. ' +
+          'The .ipynb opens in Jupyter, VS Code, or Colab; the .py runs on its own.',
+        manual: true,
+        check: () => false,
+        takeaway:
+          'Your analysis leaves the app in a standard format — which is what makes it submittable and reproducible.',
+      },
+    ],
+    wrapUp:
+      'A notebook is the most honest form an analysis can take: the code, the output, and the reasoning ' +
+      'in one file that someone else can re-run. That is the standard to aim for in your Dossier.',
   },
 
   {
