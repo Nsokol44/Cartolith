@@ -23,3 +23,5 @@ contextily>=1.5.0   # web basemap tiles for matplotlib/geopandas maps
 duckdb>=0.10.0
 h3>=4.0.0
 scikit-image>=0.22.0
+cfgrib>=0.9.10       # GRIB2 (weather/climate) via ecCodes — added 2026-10, see ENHANCEMENT_PLAN.md
+pyogrio>=0.7         # geopandas IO engine used for layer listing (gpkg/kml/gpx/…)

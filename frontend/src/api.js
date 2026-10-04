@@ -182,6 +182,22 @@ export const api = {
       body: JSON.stringify(payload),
     }),
 
+  // One-call novice path: valid quick methods + plain-English readings.
+  quickAnalysis: (payload) =>
+    request('/api/quick-analysis', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    }),
+
+  // One-call styled layer spec (scheme/bins/colourblind-safe palette).
+  cartoPreset: (payload) =>
+    request('/api/carto/preset', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    }),
+
   chartData: (payload) =>
     request('/api/chart-data', {
       method: 'POST',

@@ -169,3 +169,50 @@ Surgical changes only — no source-layout restructuring:
 - **Cleanup:** LICENSE, README, banners, version alignment, script fixes, `.gitignore`, tests CI — see the table above.
 
 *Nothing on this branch has been pushed. The original clone is untouched.*
+
+---
+
+## Addendum (same branch, later the same day): "open any data" + usable stats/carto
+
+### Parser coverage matrix
+
+New module `backend/data_loading.py` (sniffing, parsers, geometry detection, service URLs, friendly errors), wired into `/api/datasets/upload` (new `?layer=` / `?sheet=` / `?table=` params) and `/api/load-url`. Upload errors no longer return raw tracebacks — the traceback goes to the server log, the student gets `friendly_error()` ("what happened + what to try next"). Multi-layer/sheet/table files return HTTP 200 `{needs_choice, kind, options}` instead of failing or silently taking the first.
+
+| Format | Before | After | Fixture test |
+|---|---|---|---|
+| GeoPackage (multi-layer) | via generic path, first layer only, silently | layer listing + choice + `?layer=` | ✅ 2-layer gpkg: NeedsChoice, then zones read (1 Polygon, EPSG:4326); endpoint flow ✅ |
+| KML / KMZ | URL path only | upload supported (GDAL KML driver) | ✅ round-trip, 3 points; KMZ zipped-KML ✅ |
+| GPX | not supported | waypoints/tracks layers via `?layer=` | ✅ hand-written GPX, 2 waypoints |
+| TopoJSON | not supported | GDAL TopoJSON driver | ✅ minimal topology, 2 points |
+| GML | URL path only | upload supported | ✅ round-trip |
+| FlatGeobuf | URL path only | upload supported | ✅ round-trip |
+| GeoJSON Sequence | not supported | upload supported | ✅ 2 features |
+| Zipped GeoJSON/GPKG/KML/GML/FGB/TopoJSON/GRIB2/CSV | zip = shapefile/NetCDF/raster/LiDAR only | any of these inside a zip | ✅ zipped GeoJSON end-to-end |
+| CSV with WKT column | loaded as text | **auto-detected** (≥80% WKT-like) → real geometry + stated WGS84 assumption | ✅ |
+| CSV with lat/lon (fuzzy headers) | manual columns later | auto-detected (`LATITUDE`/`Longitude`/… + range validation) → points | ✅ |
+| CSV encoding/delimiter | UTF-8 + comma or death | UTF-8→Latin-1 fallback, delimiter sniffing (`,` `;` tab `\|`) | ✅ semicolon + Latin-1 "café" |
+| JSON records / JSONL | dict/list partially | arrays + ndjson handled | ✅ |
+| Excel multi-sheet | first sheet silently | sheet listing + choice + `?sheet=` | ✅ 2 sheets |
+| SQLite / SpatiaLite tables | not supported | table listing + choice + `?table=`; WKT/WKB columns detected | ✅ 2 tables + WKT places |
+| GRIB2 | **not supported** | cfgrib/xarray → tidy table (lat/lon/variable), auto-points when lat/lon present | ✅ real GRIB2 written via ecCodes samples API, 12 cells read back |
+| HDF5 | partial via NetCDF path | routed with NetCDF (same xarray/netCDF4 engine) | via NetCDF path (no separate fixture) |
+| COG over HTTP | URL loaded as file | rasterio range-read registration + tiling metadata | ✅ local Range server (subprocess — an in-process server deadlocks GDAL's threaded curl); server log proves `Range: bytes=` requests |
+| WFS / OGC API Features / ArcGIS REST URLs | treated as files | service URL builders → GetFeature / `/items` / `/query?f=geojson` | ✅ builder unit tests incl. WFS-without-layer plain-English refusal (live-service fetch not tested headless) |
+| Content sniffing | extension trusted | magic bytes first (SQLite/GRIB/HDF5/TIFF/zip), extension second | ✅ gpkg bytes named `.csv` detected |
+| SpatiaLite native geometry blobs | — | **documented gap:** plain-WKB parse attempted; SpatiaLite's envelope format is refused with instructions to export WKT (see `apply_geometry`) | refusal path in code; no fixture (cannot generate SpatiaLite without the mod_spatialite extension) |
+| Shapefile / DBF / NetCDF / GeoTIFF / LAS-LAZ / images | supported | unchanged (kept their battle-tested paths) | covered by prior smoke verification |
+
+**New dependencies, justified:** `cfgrib` (+`eccodes`, whose wheel now bundles the C library — verified installing cleanly in a fresh venv) is the *only* maintained route to GRIB2, the standard weather/climate format — a geography teaching tool that cannot open GRIB cannot serve climate courses. `pyogrio` pinned explicitly (it is geopandas 1.x's IO engine and provides the layer-listing API; previously it arrived only transitively). `mapclassify` and `openpyxl` were already in requirements.txt.
+
+### Stats + cartography usability
+
+**Click path before:** Analyze tab → pick method from 22 → configure variables → run → read a statistics table and interpret it yourself (the advanced methods did return interpretations — credit where due — but only *after* choosing the right method and settings).
+**Click path now:** Analyze tab → select variables → **⚡ Quick analysis** (1 click) → every *valid* quick method runs (descriptive, correlation, Moran's I, regression) with plain-English interpretations, a missing-data note ("2 row(s) were dropped…"), and per-method explanations for what did *not* run and how to fix the selection. Backend: `backend/quick_analysis.py` + `POST /api/quick-analysis`. Two design details worth keeping: coordinate columns are never counted as analysis variables (the `[value, lon]` selection no longer blocks Moran's I), and the permutation seed is fixed and reported.
+
+**Cartography before:** pick layer type → column → colormap name → classification (quantile/equal only) — four decisions a novice cannot yet judge.
+**Cartography now:** **✨ Auto-style this column** → `POST /api/carto/preset` returns a complete spec: kind (choropleth/categorical/proportional/heatmap), scheme (NaturalBreaks for symmetric data, Quantiles when |skew|>1 — via mapclassify), bins covering the data range, legend labels, a *colourblind-safe-only* palette (ColorBrewer Blues/YlGnBu/BuPu sequential; Okabe-Ito categorical), and a "why" sentence. Refusals are specs too: text column → categorical map or count-first suggestion; negatives for proportional symbols → refusal with reason. Backend: `backend/carto_presets.py`, fully tested (bins cover range, palette membership, refusal conditions, interpretation wording conditions for Moran's I significance both ways).
+
+**Frontend wiring (build-verified, needs visual QC):** `api.quickAnalysis` / `api.cartoPreset` in `api.js`; Quick analysis button + results strip in AnalyzeTab; Auto-style button + spec card in CartographyTab (applies scheme/class count to the form where the existing controls map cleanly; explicit palette application to the layer renderer is the remaining step). `npm run build` passes; nobody has *looked* at these panels yet — treat layout as unverified.
+
+**New test counts (separate from the earlier suites):** `test_data_loading.py` 21 tests, `test_usability.py` 11 tests — all passing. Full suite now **73 passed, 1 xfailed**.
+

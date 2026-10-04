@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { useApp } from '../store'
-import { cartoApi, getBase } from '../api'
+import { api, cartoApi, getBase } from '../api'
 import { fireLessonEvent } from '../lesson-events'
 
 // ── Leaflet loaded via CDN script tag injected once ──────────────────────────
@@ -146,6 +146,7 @@ export default function CartographyTab() {
     label: '',
   })
 
+  const [presetSpec, setPresetSpec] = useState(null)
   const [clipDrawing, setClipDrawing] = useState(false)
   const [clipStart, setClipStart] = useState(null)
   const [clipPreview, setClipPreview] = useState(null) // {min_lon,min_lat,max_lon,max_lat}
@@ -892,6 +893,37 @@ export default function CartographyTab() {
                   <option value="">None — use solid color</option>
                   {numCols.map(c => <option key={c} value={c}>{c}</option>)}
                 </select>
+                {form.value_col && (
+                  <button className="btn" style={{ marginTop: 6 }}
+                    title="Ask the backend preset: picks a defensible scheme and a colourblind-safe palette for this column"
+                    onClick={async () => {
+                      try {
+                        const spec = await api.cartoPreset({ dataset_id: form.dataset_id, column: form.value_col, kind: 'auto' })
+                        setPresetSpec(spec)
+                        if (spec.ok && spec.kind === 'choropleth') {
+                          setForm(f => ({ ...f, classification: spec.scheme === 'Quantiles' ? 'quantile' : f.classification, n_classes: spec.bins.length - 1 }))
+                        }
+                      } catch (e) { setPresetSpec({ ok: false, reason: e.message, suggestion: '' }) }
+                    }}>
+                    ✨ Auto-style this column
+                  </button>
+                )}
+                {presetSpec && (
+                  <div style={{ marginTop: 6, fontSize: 11, lineHeight: 1.5, color: 'var(--txt2)' }}>
+                    {presetSpec.ok ? (
+                      <>
+                        <div><strong>{presetSpec.kind}</strong>{presetSpec.scheme ? ` · ${presetSpec.scheme}` : ''} · palette: {presetSpec.palette_name}</div>
+                        <div style={{ display: 'flex', gap: 3, margin: '4px 0' }}>
+                          {(presetSpec.palette || []).map((c, i) => <span key={i} style={{ width: 16, height: 12, background: c, borderRadius: 2, border: '1px solid var(--bdr)' }} />)}
+                        </div>
+                        <div>{presetSpec.why}</div>
+                        {presetSpec.legend_labels && <div style={{ color: 'var(--txt3)' }}>{presetSpec.legend_labels.join(' · ')}</div>}
+                      </>
+                    ) : (
+                      <div>{presetSpec.reason} {presetSpec.suggestion}</div>
+                    )}
+                  </div>
+                )}
               </div>
             )}
 

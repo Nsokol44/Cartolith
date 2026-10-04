@@ -611,6 +611,8 @@ export default function AnalyzeTab() {
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState(null)
   const [depVar, setDepVar] = useState('')
+  const [quick, setQuick] = useState(null)
+  const [quickBusy, setQuickBusy] = useState(false)
   // Per-analysis eligibility from the backend, so the UI can explain what will
   // and will not run BEFORE the user clicks, instead of after it fails.
   const [caps, setCaps] = useState(null)
@@ -670,6 +672,17 @@ export default function AnalyzeTab() {
       setResult(res)
     } catch (e) { setError(e.message) }
     setLoading(false)
+  }
+
+  async function runQuick() {
+    if (!state.activeDataset) return
+    const cols = effectiveVars.filter(v => v.datasetId === state.activeDataset).map(v => v.column)
+    if (!cols.length) { setError('Select at least one variable (sidebar or manual) for quick analysis.'); return }
+    setQuickBusy(true); setError(null)
+    try {
+      setQuick(await api.quickAnalysis({ dataset_id: state.activeDataset, columns: cols }))
+    } catch (e) { setError(e.message) }
+    setQuickBusy(false)
   }
 
   if (!ds && analysisType !== 'join') return <div className="empty-state"><div>Load a dataset to run analyses.</div></div>
@@ -821,6 +834,14 @@ export default function AnalyzeTab() {
               </div>
             )}
 
+            <div>
+              <label className="field-label">New here?</label>
+              <button className="btn" onClick={runQuick} disabled={quickBusy}
+                title="Runs every quick method that is valid for your selected variables, with plain-English interpretations">
+                {quickBusy ? 'Thinking…' : '⚡ Quick analysis'}
+              </button>
+            </div>
+
             <div style={{ marginLeft: 'auto', alignSelf: 'flex-end', textAlign: 'right' }}>
               <button
                 className="btn primary"
@@ -847,6 +868,24 @@ export default function AnalyzeTab() {
             </div>
           )}
         </div>
+
+        {quick && (
+          <div style={{ padding: '12px 16px', borderBottom: '1px solid var(--bdr)', background: 'var(--bg2)', maxHeight: '45%', overflowY: 'auto' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>
+              <div className="section-title">Quick analysis — {quick.n_rows_used} of {quick.n_rows} rows used</div>
+              <span className="tag" onClick={() => setQuick(null)}>Dismiss</span>
+            </div>
+            <div style={{ fontSize: 11, color: 'var(--txt3)', marginBottom: 8 }}>{quick.missing_data_note}</div>
+            {Object.values(quick.results).map((r, i) => (
+              <Interpretation key={i} text={r.interpretation} />
+            ))}
+            {quick.unavailable.map((u, i) => (
+              <div key={i} style={{ fontSize: 11, color: 'var(--txt3)', marginTop: 4 }}>
+                {u.method}: {u.reason} {u.fix}
+              </div>
+            ))}
+          </div>
+        )}
 
         {/* Results */}
         <div style={{ flex: 1, overflowY: 'auto', padding: 16 }}>

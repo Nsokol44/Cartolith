@@ -281,10 +281,31 @@ def parse_zip_upload(content, fname):
             if handler_ext in ("las", "laz"):
                 return parse_lidar(inner_content, inner_name, handler_ext)
 
+        for pattern in ("*.geojson", "*.gpkg", "*.kml", "*.gml", "*.fgb",
+                        "*.topojson", "*.json"):
+            hits = list(Path(tmpdir).rglob(pattern))
+            if not hits: continue
+            inner = hits[0]
+            try:
+                import data_loading as _dl
+                gdf, _meta = _dl.read_vector(inner.read_bytes(), inner.name)
+                return _gdf_to_result(gdf, f"{fname}::{inner.name}")
+            except Exception:
+                continue
+        for pattern in ("*.grib2", "*.grb2", "*.grib"):
+            hits = list(Path(tmpdir).rglob(pattern))
+            if hits:
+                inner = hits[0]
+                return parse_grib_upload(inner.read_bytes(), f"{fname}::{inner.name}")
+        csvs = list(Path(tmpdir).rglob("*.csv"))
+        if csvs:
+            inner = csvs[0]
+            return parse_tabular(inner.read_bytes(), f"{fname}::{inner.name}", "csv")
+
         raise ValueError(
-            "No recognized file found in zip (looked for .shp, "
-            ".nc/.nc4/.cdf, .tif/.tiff, .las/.laz)"
-        )
+            "No recognized file found in zip (looked for .shp, GeoJSON, "
+            ".gpkg, .kml, .gml, .fgb, .nc/.nc4/.cdf, .tif/.tiff, .las/.laz, "
+            ".grib2, .csv)")
 
 def parse_shapefile_upload(content, fname):
     if not HAS_GEOPANDAS: raise ValueError("geopandas not installed")
@@ -628,6 +649,20 @@ def parse_tabular(content, fname, ext):
         if df[col].dtype == object and "date" in col.lower():
             try: df[col] = pd.to_datetime(df[col])
             except: pass
+    # Geometry hiding in a plain table (WKT column / lat-lon pair)? Make it
+    # a real spatial dataset and SAY what was assumed (see data_loading).
+    if HAS_GEOPANDAS:
+        try:
+            import data_loading as _dl
+            _det = _dl.detect_geometry(df)
+            if _det is not None:
+                _gdf, _note = _dl.apply_geometry(df, _det)
+                if len(_gdf) and _gdf.geometry.notna().any():
+                    _res = _gdf_to_result(_gdf, fname)
+                    _res["geometry_note"] = _note
+                    return _res
+        except Exception:
+            pass
     datasets[fname] = df
     return {"id": fname, "name": fname, "format": ext,
             "shape": list(df.shape), "columns": list(df.columns),
@@ -636,26 +671,92 @@ def parse_tabular(content, fname, ext):
 
 # ── Upload router ─────────────────────────────────────────────────────────────
 
+def parse_grib_upload(content, fname):
+    import data_loading as _dl
+    df, meta = _dl.read_grib(content)
+    det = _dl.detect_geometry(df)
+    if det is not None and HAS_GEOPANDAS:
+        try:
+            gdf, note = _dl.apply_geometry(df, det)
+            res = _gdf_to_result(gdf, fname)
+            res["grib_meta"] = meta; res["geometry_note"] = note
+            return res
+        except Exception:
+            pass
+    datasets[fname] = df
+    return {"id": fname, "name": fname, "format": "grib2",
+            "shape": list(df.shape), "columns": list(df.columns),
+            "types": infer_types(df), "preview": df_to_json(df),
+            "missing": {c: int(df[c].isna().sum()) for c in df.columns},
+            "grib_meta": meta}
+
+
 @app.post("/api/datasets/upload")
-async def upload_dataset(file: UploadFile = File(...), name: Optional[str] = None):
+async def upload_dataset(file: UploadFile = File(...), name: Optional[str] = None,
+                         layer: Optional[str] = None, sheet: Optional[str] = None,
+                         table: Optional[str] = None):
     content = await file.read()
     fname = name or file.filename or "upload"
     ext = fname.rsplit(".", 1)[-1].lower() if "." in fname else "csv"
+    import data_loading as _dl
+    sniffed = _dl.sniff_format(content, fname)
     try:
-        if ext == "zip": return parse_zip_upload(content, fname)
+        if ext == "zip" or sniffed == "zip": return parse_zip_upload(content, fname)
         elif ext == "shp": return parse_shapefile_upload(content, fname)
         elif ext == "dbf": return parse_dbf(content, fname)
+        elif sniffed in ("gpkg",) or ext in _dl.VECTOR_EXTS:
+            gdf, meta = _dl.read_vector(content, fname, layer=layer)
+            res = _gdf_to_result(gdf, fname)
+            res["load_meta"] = meta
+            return res
+        elif sniffed == "sqlite" or ext in ("sqlite", "db"):
+            # GeoPackage layers arrive here too (SQLite inside): try vector
+            # layers first, fall back to plain tables.
+            try:
+                gdf, meta = _dl.read_vector(content, fname, layer=layer)
+                res = _gdf_to_result(gdf, fname)
+                res["load_meta"] = meta
+                return res
+            except _dl.NeedsChoice:
+                raise
+            except Exception:
+                df, meta = _dl.read_table(content, fname, table=table)
+                datasets[fname] = df
+                return {"id": fname, "name": fname, "format": "sqlite",
+                        "shape": list(df.shape), "columns": list(df.columns),
+                        "types": infer_types(df), "preview": df_to_json(df),
+                        "missing": {c: int(df[c].isna().sum()) for c in df.columns},
+                        "load_meta": meta}
+        elif sniffed == "grib2":
+            return parse_grib_upload(content, fname)
+        elif ext in ("xlsx", "xls"):
+            df, meta = _dl.read_table(content, fname, sheet=sheet)
+            datasets[fname] = df
+            return {"id": fname, "name": fname, "format": ext,
+                    "shape": list(df.shape), "columns": list(df.columns),
+                    "types": infer_types(df), "preview": df_to_json(df),
+                    "missing": {c: int(df[c].isna().sum()) for c in df.columns},
+                    "load_meta": meta}
         elif ext in ("tif","tiff","geotiff","img","dem","hgt","asc"):
             if HAS_RASTERIO:
                 try: return parse_raster(content, fname, ext)
                 except: pass
             return parse_image(content, fname, ext)
-        elif ext in ("nc","nc4","cdf","netcdf"): return parse_netcdf(content, fname)
+        elif ext in ("nc","nc4","cdf","netcdf","h5","hdf5"): return parse_netcdf(content, fname)
         elif ext in ("las","laz"): return parse_lidar(content, fname, ext)
         elif ext in ("png","jpg","jpeg","bmp"): return parse_image(content, fname, ext)
         else: return parse_tabular(content, fname, ext)
+    except _dl.NeedsChoice as nc:
+        # Not an error: the file holds several layers/sheets/tables and the
+        # UI should ask which one. 200 with the options, nothing registered.
+        return {"needs_choice": True, "kind": nc.kind, "options": nc.options,
+                "detail": str(nc)}
+    except _dl.ParseFailure as pf:
+        raise HTTPException(status_code=400, detail=str(pf))
     except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Failed to parse .{ext}: {str(e)}\n\n{traceback.format_exc()}")
+        print(traceback.format_exc())
+        raise HTTPException(status_code=400,
+                            detail=_dl.friendly_error(sniffed or ext, e))
 
 # ── Dataset management ────────────────────────────────────────────────────────
 
@@ -1812,6 +1913,39 @@ def run_analysis(req: AnalysisRequest):
         else: raise HTTPException(status_code=400,detail=f"Unknown analysis: {t}")
     except HTTPException: raise
     except Exception as e: raise HTTPException(status_code=500,detail=f"Analysis error: {str(e)}\n{traceback.format_exc()}")
+
+@app.post("/api/quick-analysis")
+def quick_analysis_endpoint(body: dict):
+    """One-call analysis for novices: dataset + columns -> the valid quick
+    methods with plain-English interpretations (see quick_analysis.py)."""
+    ds_id = body.get("dataset_id"); cols = body.get("columns") or []
+    if ds_id not in datasets:
+        raise HTTPException(status_code=404, detail="Dataset not found.")
+    if not cols:
+        raise HTTPException(status_code=400, detail="Choose at least one column.")
+    try:
+        import quick_analysis as _qa
+        return _qa.quick_analysis(datasets[ds_id], list(cols),
+                                  seed=int(body.get("seed") or 42))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.post("/api/carto/preset")
+def carto_preset_endpoint(body: dict):
+    """One-call styled layer spec (scheme, bins, colourblind-safe palette,
+    legend labels) — see carto_presets.py. Refusals come back as
+    {ok: False, reason, suggestion}, not as errors."""
+    ds_id = body.get("dataset_id")
+    if ds_id not in datasets:
+        raise HTTPException(status_code=404, detail="Dataset not found.")
+    df = datasets[ds_id]
+    geom_types = (sorted(set(df["_geom_type"].astype(str))) if "_geom_type" in df.columns
+                  else (["Point"] if "_latitude" in df.columns else []))
+    import carto_presets as _cp
+    return _cp.preset(df, column=body.get("column"), geom_types=geom_types,
+                      kind=body.get("kind") or "auto")
+
 
 class ChartRequest(BaseModel):
     dataset_id: str; chart_type: str; x: Optional[str]=None; y: Optional[str]=None
@@ -3179,6 +3313,22 @@ def load_url(body: dict):
     name = body.get("name") or url.split("/")[-1].split("?")[0] or "remote"
     low = url.lower().split("?")[0]
     try:
+        import data_loading as _dl
+        kind, fetch_url = _dl.build_service_url(url)
+        if kind != "file":
+            if not HAS_GEOPANDAS:
+                raise HTTPException(status_code=503, detail="geopandas is needed for spatial URLs.")
+            gdf = gpd.read_file(fetch_url)
+            if gdf.crs is not None and str(gdf.crs).upper() not in ("EPSG:4326", "OGC:CRS84"):
+                gdf = gdf.to_crs("EPSG:4326")
+            res = _store_loaded_gdf(gdf, name)
+            res["service"] = kind
+            return res
+        if low.endswith((".tif", ".tiff")) or "cog" in low:
+            meta = _dl.open_remote_raster(url)
+            res = _register_raster_path(url, name, {"op": "load-url", "sources": [url]})
+            res["cog_meta"] = meta
+            return res
         if low.endswith((".csv", ".tsv")):
             sep = "\t" if low.endswith(".tsv") else ","
             df = pd.read_csv(url, sep=sep)
@@ -3203,6 +3353,9 @@ def load_url(body: dict):
     except HTTPException:
         raise
     except Exception as e:
+        import data_loading as _dl
+        if isinstance(e, _dl.ParseFailure):
+            raise HTTPException(status_code=400, detail=str(e))
         raise HTTPException(status_code=400, detail=f"Couldn't load that URL: {str(e).split(chr(10))[0][:200]}")
 
 def _register_plain_table(df, name):
