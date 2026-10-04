@@ -291,7 +291,7 @@ def _coords_of(df: pd.DataFrame) -> np.ndarray:
 # ═════════════════════════════════════════════════════════════════════════════
 # 3. SPATIAL STATISTICS
 # ═════════════════════════════════════════════════════════════════════════════
-def morans_i(values: np.ndarray, W: np.ndarray, permutations: int = 999) -> Dict[str, Any]:
+def morans_i(values: np.ndarray, W: np.ndarray, permutations: int = 999, seed: int = 42) -> Dict[str, Any]:
     """
     Global Moran's I — is this variable clustered, dispersed, or random?
 
@@ -312,7 +312,7 @@ def morans_i(values: np.ndarray, W: np.ndarray, permutations: int = 999) -> Dict
 
     # Permutation inference: how extreme is the observed I against the null
     # of "same values, random locations"?
-    rng = np.random.default_rng(42)  # fixed so a student gets a stable answer
+    rng = np.random.default_rng(seed)  # fixed default so a student gets a stable answer
     sim = np.empty(permutations)
     for p in range(permutations):
         zp = rng.permutation(z)
@@ -335,7 +335,7 @@ def morans_i(values: np.ndarray, W: np.ndarray, permutations: int = 999) -> Dict
             "sim_min": _f(sim.min()), "sim_max": _f(sim.max())}
 
 
-def gearys_c(values: np.ndarray, W: np.ndarray, permutations: int = 999) -> Dict[str, Any]:
+def gearys_c(values: np.ndarray, W: np.ndarray, permutations: int = 999, seed: int = 42) -> Dict[str, Any]:
     """Geary's C — like Moran's I, but driven by squared differences between
     neighbours, so it reacts more to local contrast. C < 1 is clustering."""
     n = len(values)
@@ -350,7 +350,7 @@ def gearys_c(values: np.ndarray, W: np.ndarray, permutations: int = 999) -> Dict
         return ((n - 1) * (W * diff).sum()) / (2 * S0 * ((v - v.mean()) ** 2).sum())
 
     C = float(C_of(values))
-    rng = np.random.default_rng(42)
+    rng = np.random.default_rng(seed)
     sim = np.array([C_of(rng.permutation(values)) for _ in range(permutations)])
     p_sim = (np.sum(np.abs(sim - 1.0) >= abs(C - 1.0)) + 1) / (permutations + 1)
 
@@ -366,7 +366,7 @@ def gearys_c(values: np.ndarray, W: np.ndarray, permutations: int = 999) -> Dict
 
 
 def local_morans(values: np.ndarray, W: np.ndarray, coords: np.ndarray,
-                 permutations: int = 499) -> Dict[str, Any]:
+                 permutations: int = 499, seed: int = 42) -> Dict[str, Any]:
     """
     Local Moran's I (LISA) — classifies every location into one of four
     relationships with its neighbours, plus 'not significant':
@@ -383,7 +383,7 @@ def local_morans(values: np.ndarray, W: np.ndarray, coords: np.ndarray,
     lag = W @ z
     Ii = (z / s2) * lag
 
-    rng = np.random.default_rng(42)
+    rng = np.random.default_rng(seed)
     sim = np.empty((permutations, n))
     for p in range(permutations):
         zp = rng.permutation(z)
@@ -444,6 +444,7 @@ def gwr(y: np.ndarray, X: np.ndarray, coords: np.ndarray, names: List[str],
 
     Xc = np.column_stack([np.ones(n), X])
     local_coefs, local_r2, fitted = [], [], np.zeros(n)
+    hat_trace = 0.0  # trace of the GWR hat matrix = effective number of parameters
 
     for i in range(n):
         w = np.exp(-(d[i] / bandwidth) ** 2)
@@ -451,8 +452,11 @@ def gwr(y: np.ndarray, X: np.ndarray, coords: np.ndarray, names: List[str],
         XtW = Xc.T @ Wi
         try:
             beta = np.linalg.solve(XtW @ Xc, XtW @ y)
+            hat_row = Xc[i] @ np.linalg.solve(XtW @ Xc, XtW)
         except np.linalg.LinAlgError:
             beta = np.linalg.pinv(XtW @ Xc) @ (XtW @ y)
+            hat_row = Xc[i] @ (np.linalg.pinv(XtW @ Xc) @ XtW)
+        hat_trace += float(hat_row[i])
         local_coefs.append(beta)
         fitted[i] = Xc[i] @ beta
         yhatw = Xc @ beta
@@ -479,9 +483,31 @@ def gwr(y: np.ndarray, X: np.ndarray, coords: np.ndarray, names: List[str],
     }
     varying = [k for k, v in summary.items() if k != "intercept" and v["changes_sign"]]
 
+    # Model-comparison diagnostics (Fotheringham, Brunsdon & Charlton 2002):
+    # AICc penalises the effective parameters, so a student can test whether
+    # GWR's extra flexibility actually beats the single global regression.
+    p_eff = float(hat_trace)
+    if ss_res > 0 and n - 2 - p_eff > 0:
+        sigma = np.sqrt(ss_res / n)
+        aicc = float(2 * n * np.log(sigma) + n * np.log(2 * np.pi)
+                     + n * (n + p_eff) / (n - 2 - p_eff))
+    else:
+        aicc = float("nan")
+    k_ols = Xc.shape[1]
+    if ss_tot > 0 and n - 2 - k_ols > 0:
+        ols_beta0 = np.linalg.lstsq(Xc, y, rcond=None)[0]
+        rss_ols = float(((y - Xc @ ols_beta0) ** 2).sum())
+        sigma_o = np.sqrt(rss_ols / n)
+        ols_aicc = float(2 * n * np.log(sigma_o) + n * np.log(2 * np.pi)
+                         + n * (n + k_ols) / (n - 2 - k_ols))
+    else:
+        ols_aicc = float("nan")
+
     cap = 2000
     return {
         "type": "gwr", "n": int(n), "bandwidth": _f(bandwidth),
+        "effective_parameters": _f(p_eff),
+        "aicc": _f(aicc), "ols_aicc": _f(ols_aicc),
         "global_r_squared": _f(1 - ss_res / ss_tot if ss_tot else None),
         "coefficient_summary": summary,
         "local_r2_mean": _f(np.nanmean(local_r2)),

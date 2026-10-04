@@ -1,6 +1,6 @@
 {
   "name": "cartolith-frontend",
-  "version": "5.0.0",
+  "version": "1.4.11",
   "type": "module",
   "scripts": {
     "dev": "vite",

@@ -87,7 +87,7 @@ try:
 except ImportError as e:
     HAS_DUCKDB = False; print(f"[startup] duckdb unavailable: {e}")
 
-app = FastAPI(title="Cartolith API", version="5.0.0")
+app = FastAPI(title="Cartolith API", version="1.4.11")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
 try:
@@ -661,7 +661,7 @@ async def upload_dataset(file: UploadFile = File(...), name: Optional[str] = Non
 
 @app.get("/api/health")
 def health():
-    return {"status": "ok", "version": "5.0.0",
+    return {"status": "ok", "version": "1.4.11",
             "capabilities": {"scipy": HAS_SCIPY, "statsmodels": HAS_STATSMODELS,
                 "geopandas": HAS_GEOPANDAS, "rasterio": HAS_RASTERIO,
                 "netcdf": HAS_NETCDF or HAS_XARRAY, "xarray": HAS_XARRAY,
@@ -1783,9 +1783,10 @@ def run_analysis(req: AnalysisRequest):
                     vals = frame[sel[0]].values.astype(float)
                     coords = frame[[lonc, latc]].values.astype(float)
                     W = adv.spatial_weights(coords, k=k)
-                    if t == "morans_i":    return adv.morans_i(vals, W)
-                    if t == "gearys_c":    return adv.gearys_c(vals, W)
-                    return adv.local_morans(vals, W, coords)
+                    seed = int(req.params.get("seed") or 42)
+                    if t == "morans_i":    return adv.morans_i(vals, W, seed=seed)
+                    if t == "gearys_c":    return adv.gearys_c(vals, W, seed=seed)
+                    return adv.local_morans(vals, W, coords, seed=seed)
 
                 # GWR / spatial lag: y is the dependent, the rest are predictors.
                 dep = req.params.get("dependent") or sel[-1]
@@ -2545,14 +2546,19 @@ def geoprocess_run(body: dict):
             cell_km = float(params.get("cell_km", 0))
             if cell_km <= 0: raise ValueError("Cell size must be greater than zero.")
             minx, miny, maxx, maxy = gdf.total_bounds
-            deg = cell_km / 111.0
+            # A degree of longitude covers fewer metres away from the equator:
+            # scale x by 1/cos(centre latitude) or a "10 km" cell at 60N comes
+            # out 5 km wide. (Found by backend/tests/test_geoprocess.py.)
+            import numpy as _np
+            deg_y = cell_km / 110.57
+            deg_x = cell_km / (111.32 * max(_np.cos(_np.radians((miny + maxy) / 2.0)), 0.01))
             cells, i = [], 0
             y = miny
             while y < maxy and i < 100000:
                 x = minx
                 while x < maxx and i < 100000:
-                    cells.append(_box(x, y, min(x + deg, maxx), min(y + deg, maxy))); x += deg; i += 1
-                y += deg
+                    cells.append(_box(x, y, min(x + deg_x, maxx), min(y + deg_y, maxy))); x += deg_x; i += 1
+                y += deg_y
             out = gpd.GeoDataFrame({"cell": range(len(cells))}, geometry=cells, crs="EPSG:4326")
             detail = f"{len(cells)}-cell grid over {ds_id} ({cell_km:g} km)"
 
@@ -2640,7 +2646,13 @@ def geoprocess_run(body: dict):
 
     name = body.get("output_name") or f"{GEOPROCESS_TOOLS[tool]['label']} · {ds_id}"
     sources = [ds_id] + ([params["other_id"]] if tool == "spatial_join" and params.get("other_id") else [])
-    return _store_derived_gdf(out, name, {"op": tool, "sources": sources, "detail": detail, "params": params})
+    result = _store_derived_gdf(out, name, {"op": tool, "sources": sources, "detail": detail, "params": params})
+    try:
+        from code_reveal import snippet_for
+        result["code_reveal"] = snippet_for(tool, params, ds_id, params.get("other_id") or "other")
+    except Exception:
+        pass
+    return result
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -2692,7 +2704,13 @@ def _register_raster_path(path, name, derived, colormap="viridis"):
         thumb = raster_band_thumb(r, 1, 512, colormap)
         crs_str = crs_to_str(r.crs); bounds = list(r.bounds); res = list(r.res); W, H = r.width, r.height
     datasets[new_id] = df
-    return {"id": new_id, "name": new_id, "format": "tif",
+    _reveal = None
+    try:
+        from code_reveal import snippet_for
+        _reveal = snippet_for(derived.get("op"), derived.get("params") or {})
+    except Exception:
+        pass
+    return {"id": new_id, "name": new_id, "format": "tif", "code_reveal": _reveal,
             "shape": list(df.shape), "columns": list(df.columns),
             "types": infer_types(df), "preview": df_to_json(df),
             "missing": {c: int(df[c].isna().sum()) for c in df.columns},
@@ -2865,12 +2883,25 @@ def raster_tools_run(body: dict):
                 z = band(1)
                 dx, dy = _cellsize_meters(src)
                 gy, gx = np.gradient(z, dy, dx)  # gx = dz/dx, gy = dz/dy
+                # NOTE on conventions: arctan2(gy, -gx) gives the downslope
+                # direction as a *mathematical* angle (0 = east, counter-
+                # clockwise). GIS tools (ArcGIS Pro, GDAL) report aspect as a
+                # *compass bearing* (0 = north, clockwise) and take the sun
+                # azimuth as a compass bearing too. Mixing the two lit
+                # hillshades from the south-east while claiming a north-west
+                # sun (inverted relief) and made aspect disagree with ArcGIS
+                # by a rotation. Convert: compass = (90 - math) mod 360.
+                # (Found by backend/tests/test_terrain.py.)
                 if tool == "slope":
                     result = np.degrees(np.arctan(np.hypot(gx, gy))); cmap = "magma"; detail = f"Slope of {ds_id} (degrees)"
                 elif tool == "aspect":
-                    asp = np.degrees(np.arctan2(gy, -gx)); result = np.where(asp < 0, 360 + asp, asp); cmap = "twilight"; detail = f"Aspect of {ds_id} (0–360°)"
-                else:  # hillshade
-                    az, alt = np.radians(315.0), np.radians(45.0)
+                    asp_math = np.degrees(np.arctan2(gy, -gx))
+                    result = np.mod(90.0 - asp_math, 360.0)
+                    result = np.where(np.hypot(gx, gy) == 0, -1.0, result)  # flat = -1, as in ArcGIS
+                    cmap = "twilight"; detail = f"Aspect of {ds_id} (compass degrees, 0 = north; -1 = flat)"
+                else:  # hillshade — sun azimuth 315° is a compass bearing (NW)
+                    az = np.radians(90.0 - 315.0)  # compass -> mathematical angle
+                    alt = np.radians(45.0)
                     slope = np.arctan(np.hypot(gx, gy)); aspect = np.arctan2(gy, -gx)
                     hs = (np.sin(alt) * np.cos(slope) + np.cos(alt) * np.sin(slope) * np.cos(az - aspect))
                     result = np.clip(hs * 255.0, 0, 255); cmap = "gray"; detail = f"Hillshade of {ds_id} (az 315°, alt 45°)"
@@ -3058,6 +3089,40 @@ def project_load(body: dict):
                          "derived": e.get("derived"), "sample": e.get("sample"),
                          "geo_meta": e.get("geo_meta")})
     return {"restored": restored, "skipped": skipped, "map": proj.get("map")}
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  Exercises — "check my work" (assessment seed; see exercises.py)
+# ══════════════════════════════════════════════════════════════════════════════
+
+@app.get("/api/exercises")
+def list_exercises():
+    try:
+        import exercises as exmod
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=f"Exercises unavailable: {e}")
+    return {"exercises": [{k: ex[k] for k in ("id", "title", "prompt", "objectives")}
+                           for ex in exmod.EXERCISES]}
+
+
+@app.post("/api/exercises/{exercise_id}/check")
+def check_exercise(exercise_id: str, body: dict):
+    """Grade a submission: {"dataset_id": ...} for dataset exercises, or
+    {"result": {...}} for numeric/interpretation exercises."""
+    try:
+        import exercises as exmod
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=f"Exercises unavailable: {e}")
+    ex = exmod.get_exercise(exercise_id)
+    if ex is None:
+        raise HTTPException(status_code=404, detail=f"Unknown exercise: {exercise_id}")
+    if body.get("dataset_id"):
+        gdf = _get_vector_gdf(body["dataset_id"])
+        return exmod.grade(ex, {"gdf": gdf})
+    if body.get("result") is not None:
+        return exmod.grade(ex, {"result": body["result"]})
+    raise HTTPException(status_code=400,
+                        detail="Submit {\"dataset_id\": ...} or {\"result\": {...}}.")
+
 
 # ══════════════════════════════════════════════════════════════════════════════
 #  Lineage & pipeline  —  every derived dataset knows its recipe, so we can draw

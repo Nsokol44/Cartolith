@@ -1,0 +1,29 @@
+name: Backend tests
+
+# The desktop build workflow packages the app but historically ran ZERO
+# tests — a teaching tool could ship wrong answers without anything
+# noticing. This job runs the analytical validation suite on every push.
+on:
+  push:
+    branches: [master, main]
+  pull_request: {}
+  workflow_dispatch: {}
+
+jobs:
+  pytest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+      - name: Install test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install numpy pandas scipy scikit-learn geopandas shapely pyproj \
+            rasterio fastapi python-multipart httpx pytest esda libpysal \
+            matplotlib duckdb
+      - name: Run backend validation suite
+        working-directory: backend
+        run: python -m pytest tests/ -q

@@ -1,138 +1,135 @@
 # Cartolith
 
 A desktop data-exploration tool for spatial and tabular datasets —
-shapefiles, GeoJSON, CSV, raster — built with FastAPI + React, and
-packaged as a native double-click app for Windows, macOS, and Linux.
+shapefiles, GeoJSON, CSV, raster, NetCDF, lidar — built with FastAPI +
+React and packaged as a native double-click app. Cartolith is designed
+for **teaching GIS and spatial analysis to people who have never used
+GIS**: every operation derives a new dataset with visible lineage, and a
+plain-English teaching layer (glossary, per-tool explainers, guided
+lessons) is woven through the whole app.
 
-This folder is the complete, ready-to-push project: the renamed
-app source (formerly "DataLens Explorer") plus the desktop packaging
-that turns it into a one-click executable.
+Version 1.4.11 · MIT License (see `LICENSE`)
 
-## For students: quick start
+---
+
+## Students: install and run (the only path most people need)
 
 1. Go to **[the latest release](https://github.com/Nsokol44/Cartolith/releases/latest)**.
 2. Under "Assets", download the one file for your computer:
    - **Windows** → `Cartolith-windows.zip`
    - **Mac, 2020 or newer (M1/M2/M3/M4 chip)** → `Cartolith-macos-apple-silicon.zip`
    - **Mac, older (Intel chip)** → `Cartolith-macos-intel.zip`
-   - Not sure which Mac you have? Apple menu → **About This Mac** → look for "Chip" (Apple M-something) or "Processor" (Intel).
+   - Not sure which Mac you have? Apple menu → **About This Mac** → "Chip" (Apple M-something) or "Processor" (Intel).
 3. Unzip it, then:
-   - **Windows:** run the installer inside (a `.msi` or `*-setup.exe` file — not a plain `Cartolith.exe`). Windows will likely warn "Windows protected your PC" — click **More info → Run anyway**. Once installed, open Cartolith from the Start Menu.
-   - **Mac:** double-click **`Install and Run Cartolith.command`** the *first* time (not `Cartolith.app` directly) — this clears the "not verified" security block for you. After that, open `Cartolith.app` normally.
-4. First launch can take a minute or two to fully start — that's expected, not frozen. Leave the window open.
+   - **Windows:** run the installer inside (`.msi` or `*-setup.exe` — not a plain `Cartolith.exe`). Windows will likely warn "Windows protected your PC" — click **More info → Run anyway**. Then open Cartolith from the Start Menu.
+   - **Mac:** double-click **`Install and Run Cartolith.command`** the *first* time (not `Cartolith.app` directly) — it clears the "not verified" block for unsigned apps. After that, open `Cartolith.app` normally.
+4. First launch can take a minute or two. That's expected, not frozen.
 
-You don't need Python, Node, GDAL, or this source code to run Cartolith. If someone points you at `./start.sh` or `pip install`, that's the instructor's dev setup, not meant for students — let your instructor know if that happens.
+You do **not** need Python, Node, GDAL, or this source code. If someone
+points you at `./start.sh` or `pip install`, that's the developer setup
+below — let your instructor know.
 
-**If the app still won't launch after trying the above,** there's a
-second, simpler-but-uglier fallback build: look for `Cartolith-web-*`
-zips on the same release page (e.g. `Cartolith-web-windows.zip`). This
-version opens in your regular web browser instead of its own window,
-with a plain console/terminal window running alongside it — less
-polished, but sometimes gets past whatever's blocking the main app on a
-particular machine. Same download-and-run steps apply. If even that
-doesn't work, "Running from source as a last resort" further down is
-the final fallback, with the caveat that it can hit different problems
-of its own.
+**If the native app won't launch** on your machine, look for the
+`Cartolith-web-*` zip for your platform on the same release page. That
+fallback build opens in your regular web browser with a plain console
+window alongside. If that fails too, "Running from source" at the bottom
+is the last resort.
 
-## For instructors/developers: run it locally (dev mode)
+## Which build do I use?
+
+There are two packaging paths in this repo. They confused people, so
+here is the whole story:
+
+| Build | Where it lives | Status |
+|---|---|---|
+| **Tauri native app** (`Cartolith-*.zip`) | `src-tauri/`, `desktop-tauri/`, built by `.github/workflows/build-tauri.yml` | **Primary.** Give this to students first. |
+| PyInstaller + browser (`Cartolith-web-*.zip`) | `desktop/` | **Legacy fallback** for machines where the native app won't launch. See the banner in `desktop/README.md`. |
+
+## Developers / instructors: run from source
+
+One command:
 
 ```bash
 ./start.sh
 ```
 
-This installs Python + Node dependencies straight into a local venv on
-*your* machine, which is why it's sensitive to your Python version,
-CPU architecture, and whether GDAL is available locally — normal for a
-dev workflow on one known machine, but exactly what you don't want to
-depend on for a whole class of varied student laptops. That variability
-is what the packaged desktop app below sidesteps entirely: GDAL gets
-bundled once, in CI, into a binary each student just runs.
+That is the whole dev workflow. It checks your prerequisites with
+plain-English errors (Python 3.10–3.12 — newer Pythons force the GIS
+libraries into source builds that usually fail; Node 18+), creates
+`backend/.venv`, installs dependencies **only when they have changed**,
+starts the backend on port 8000 and the frontend on port 5173, and waits
+until the backend answers before launching the UI. `./stop.sh` stops
+both; `./restart.sh` restarts.
 
-## Ship it as a double-click desktop app
+Then open http://localhost:5173. In dev mode the frontend proxies to the
+backend at http://localhost:8000; `./start.sh` prints both URLs.
 
-Push this whole folder to a GitHub repo, then tag a release:
+### Cutting a release
 
 ```bash
-git init
-git add .
-git commit -m "Cartolith v1.0"
-git remote add origin <your-repo-url>
-git push -u origin main
-git tag v1.0
-git push origin v1.0
+git tag v1.4.12   # keep the app version strings in step — see below
+git push origin v1.4.12
 ```
 
-GitHub's own Windows/macOS/Linux runners will each build a native app
-automatically — check the "Actions" tab while it runs, then "Releases"
-for the downloadable zips once it finishes. Two separate pipelines run
-on the same tag push and attach to the same release:
+GitHub Actions (`build-tauri.yml`) builds the Windows and both macOS
+installers and attaches them to the release. Linux is currently disabled
+in the build matrix (the matrix entry is commented out in the workflow).
 
-- **`desktop-tauri/` + `.github/workflows/build-tauri.yml` (primary).**
-  A real native app window (dock icon, no browser tab, no console
-  window) using [Tauri](https://tauri.app) — see `desktop-tauri/README.md`,
-  including an honest note on what this does and doesn't fix about the
-  macOS "not verified" message. Give this to students first.
-- **`desktop/` + `.github/workflows/build-desktop.yml` (fallback).**
-  Opens in the student's regular browser instead, with a console window
-  running alongside it. Uglier, but occasionally more forgiving of
-  unusual local security software than a native window. All of this
-  pipeline's asset names are prefixed `Cartolith-web-*` specifically so
-  they can never collide with the Tauri build's `Cartolith-*` names on
-  the same release — keep that prefix if you ever rename anything here.
+Version numbers live in four places and must agree with the tag:
+`backend/main.py` (FastAPI `version=` and `/api/health`),
+`frontend/package.json`, `src-tauri/tauri.conf.json`, and the banner in
+`start.sh`. They were aligned to the tag line (1.4.11) in October 2026;
+before that the app strings said 5.0.0 while tags said 1.4.x, which made
+bug reports hard to place.
 
-Look for these exact filenames on the Releases page:
+### Tests
 
-| Artifact | Give it to |
-|---|---|
-| `Cartolith-windows.zip` | Windows students |
-| `Cartolith-macos-apple-silicon.zip` | Macs from 2020+ (M1/M2/M3/M4 chip) |
-| `Cartolith-macos-intel.zip` | Older Intel Macs |
-| `Cartolith-linux.zip` | Linux students |
-| `Cartolith-web-windows.zip` | Windows students, if the native app won't launch |
-| `Cartolith-web-macos-apple-silicon.zip` | Macs from 2020+, if the native app won't launch |
-| `Cartolith-web-macos-intel.zip` | Older Intel Macs, if the native app won't launch |
-| `Cartolith-web-linux.zip` | Linux students, if the native app won't launch |
+```bash
+cd backend && python -m pytest tests/ -q
+```
 
-### For Windows students
+The suite validates the analytical core against independent references
+(PySAL/esda for the spatial statistics, analytic cases for buffers,
+terrain, zonal statistics) plus the exercise grader and code-reveal
+coverage. CI runs it on every push (`.github/workflows/tests.yml`) — the
+desktop build workflow itself only packages.
 
-The Windows zip contains an **installer** (a `.msi` file, or something
-named like `Cartolith_1.0.0_x64-setup.exe`) — not a ready-to-run
-`Cartolith.exe`. Students need to run that installer and let it finish;
-Cartolith then shows up in the Start Menu like any normal installed
-program, which is what they actually open afterward — not anything in
-the originally downloaded/unzipped folder. Windows SmartScreen will
-likely warn "Windows protected your PC" the first time the installer
-runs, since it's unsigned — clicking **"More info" → "Run anyway"** is
-expected and safe, not a sign of a problem. Worth stating this
-explicitly to the class up front; "I can't find Cartolith.exe" is an
-easy thing to get stuck on otherwise.
+## What Cartolith does
 
-### For Mac students
+- **Dataset-centric workflow** — Explore, Visualize, Cartography,
+  Analyze, Statistics, Geoprocess, SQL Lab, Notebook, and Learn tabs all
+  read and write *datasets*; every operation derives a new dataset that
+  carries its lineage (the Pipeline view draws the dependency graph and
+  can re-run any recipe).
+- **Geoprocess hub** — 19 vector/overlay/grid/select tools (buffer,
+  spatial join, clip/intersection/difference/union, Voronoi, H3, …),
+  12 raster tools (terrain, NDVI/NDWI/EVI, zonal statistics, …), and
+  3 network tools (OD matrix, nearest facility, service area) using
+  straight-line distance — honest, offline, and instant; true drive-time
+  would need a routing engine.
+- **Statistics, including spatial statistics** — Moran's I, Geary's C,
+  LISA, geographically weighted regression, spatial lag models, plus the
+  standard suite (regression, PCA, k-means, trees/forests, MLP).
+- **Teaching layer** — a 52-concept plain-English glossary, a `?`
+  explainer beside every tool, 8 guided lessons whose steps check the
+  app's real state, and one-click sample data.
+- **Code reveal** — operations return the equivalent geopandas/PySAL
+  snippet, so a workflow learned in the GUI can be re-run as a script.
 
-The macOS zips ship **`Cartolith.app`** plus an **`Install and Run
-Cartolith.command`** helper. Tell students to double-click the
-`.command` file the *first* time, not the `.app` directly — it clears
-the quarantine flag macOS puts on unsigned apps downloaded from the
-internet (the thing behind the "can't be opened because it is not
-verified" / "is damaged" message). After that first run, `Cartolith.app`
-can be opened normally.
+## Honest limitations
 
-This doesn't make that message disappear on its own — that requires a
-paid Apple Developer account ($99/yr) for code signing + notarization.
-The `.command` workaround is the free alternative. See
-`desktop-tauri/README.md` for the full explanation and how to set up
-notarization if you want to remove this step entirely.
+Unsigned installers (no paid Apple/Microsoft certificates), basemaps
+need an internet connection (choose "No basemap" offline), network
+tools are straight-line only, symbology/labels are basic, and there is
+no digitizing/editing yet. `WHATS_NEW.md` tracks feature history in
+detail; `ENHANCEMENT_PLAN.md` is a candid audit of correctness,
+pedagogy, and what to build next.
 
-## Running from source as a last resort
+## Running from source as a last resort (students)
 
-If a student's packaged app genuinely won't launch no matter what (rare,
-but possible — different Windows/Mac security software, an unusual
-system config, etc.), running Cartolith directly from source is a
-legitimate fallback. It is **not** a simpler alternative to the
-packaged app — it trades "installer/security-prompt friction" for
-"your Python environment has to cooperate," which is exactly the
-problem the packaged app exists to avoid for everyone else. Only reach
-for this with a specific stuck student, not as a general recommendation.
+Only for a specific stuck machine — it trades installer friction for
+Python-environment friction, which is the problem the packaged app
+exists to avoid.
 
 ```bash
 git clone https://github.com/Nsokol44/Cartolith.git
@@ -140,40 +137,15 @@ cd Cartolith
 ./start.sh
 ```
 
-A few things that measurably improve the odds of this working:
+Use Python 3.10–3.12, upgrade pip first (`pip install --upgrade pip
+setuptools wheel`), on Mac `brew install gdal` helps if a wheel is
+missing, and on Apple Silicon make sure Terminal is not running under
+Rosetta (`arch` should print `arm64`). Get the exact `pip install` error
+text before troubleshooting — the fix depends on which package failed.
 
-- **Use Python 3.10–3.12.** The geospatial packages (`fiona`, `rasterio`,
-  `geopandas`, `pyproj`) have the best prebuilt-wheel coverage on these
-  versions. Very new (3.13+) or very old Python is more likely to force
-  a from-source build, which then needs a system GDAL install to even
-  attempt and often fails without one.
-- **Upgrade pip first:** `pip install --upgrade pip setuptools wheel`
-  before running `./start.sh` — an outdated resolver is a common cause
-  of "tries to build from source and fails" even when a working
-  prebuilt wheel exists.
-- **On Mac, if it still tries to build from source:** `brew install gdal`
-  gives pip a system GDAL to link against.
-- **On Apple Silicon specifically:** make sure Terminal itself isn't
-  running under Rosetta (check with `arch` — it should print `arm64`,
-  not `i386`/`x86_64`).
+## History
 
-If a student hits an error here, get the exact `pip install` error text
-(not just "it failed") before troubleshooting further — the fix is
-usually specific to which package failed and why.
-
-## What changed from the original DataLens Explorer
-
-"DataLens" → "Cartolith" in every user-facing string (app header,
-browser tab title, welcome screen, in-app concept explanations,
-`start.sh`/`stop.sh` console output), the FastAPI app title, and the
-saved-project file format itself: `.datalens.json` → `.cartolith.json`,
-with the internal marker key `datalens_project` → `cartolith_project`
-updated consistently in both the save and load-validation code.
-
-**Heads up:** any project files saved under the old `.datalens.json`
-format won't be recognized as valid Cartolith projects unless a
-backwards-compatibility check is added. Ask if you want that.
-
-No internal logic, variable names, or file structure were changed —
-only user-visible strings, the two format identifiers above, and the
-addition of `desktop/` and `.github/workflows/`.
+Cartolith was formerly "DataLens Explorer". User-facing strings, the
+FastAPI title, and the project file format were renamed
+(`.datalens.json` → `.cartolith.json`); old project files are not
+recognised unless a compatibility check is added.

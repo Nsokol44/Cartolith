@@ -1,3 +1,7 @@
+> **This is the primary build** — the one students should download and
+> the one CI builds (`.github/workflows/build-tauri.yml`). The `desktop/`
+> folder is the legacy PyInstaller fallback; see the banner there.
+
 # Cartolith — Tauri Desktop Packaging
 
 This turns Cartolith into a real native desktop app (dock icon, its own

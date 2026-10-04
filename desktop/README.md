@@ -1,3 +1,12 @@
+> **LEGACY / FALLBACK — not the primary build.** This folder is the older
+> PyInstaller + pywebview packaging. It still works as a fallback when the
+> Tauri app will not launch on a particular machine (its assets are the
+> `Cartolith-web-*` zips), but new work goes to the Tauri build
+> (`desktop-tauri/` + `src-tauri/`, built by `.github/workflows/build-tauri.yml`).
+> Note: the `.github/workflows/build-desktop.yml` workflow referenced in
+> older instructions does not exist in this repo — the fallback assets are
+> produced locally with `build_mac_or_linux.sh` / `build_windows.bat`.
+
 # Cartolith — Desktop Packaging
 
 Turns your existing FastAPI + React app into a double-click desktop app

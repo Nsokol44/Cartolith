@@ -33,3 +33,14 @@ src-tauri/icons/icon.png
 # OS cruft
 .DS_Store
 __MACOSX/
+
+# Test / tooling caches
+.pytest_cache/
+backend/.pytest_cache/
+
+# User project files and local data (never commit a student's work)
+*.cartolith.json
+outputs/
+
+# Python envs outside backend/
+.venv/
