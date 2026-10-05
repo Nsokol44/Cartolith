@@ -87,7 +87,7 @@ try:
 except ImportError as e:
     HAS_DUCKDB = False; print(f"[startup] duckdb unavailable: {e}")
 
-app = FastAPI(title="Cartolith API", version="1.4.11")
+app = FastAPI(title="Cartolith API", version="1.5.0")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
 try:
@@ -762,7 +762,7 @@ async def upload_dataset(file: UploadFile = File(...), name: Optional[str] = Non
 
 @app.get("/api/health")
 def health():
-    return {"status": "ok", "version": "1.4.11",
+    return {"status": "ok", "version": "1.5.0",
             "capabilities": {"scipy": HAS_SCIPY, "statsmodels": HAS_STATSMODELS,
                 "geopandas": HAS_GEOPANDAS, "rasterio": HAS_RASTERIO,
                 "netcdf": HAS_NETCDF or HAS_XARRAY, "xarray": HAS_XARRAY,

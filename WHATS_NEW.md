@@ -1,3 +1,27 @@
+# Cartolith — What's New
+
+## v1.5.0 (October 2026)
+
+- **Opens almost anything:** GeoPackage (with layer choice), KML/KMZ, GPX,
+  TopoJSON, GML, FlatGeobuf, GeoJSON Sequence, multi-sheet Excel, SQLite,
+  GRIB2 weather files, cloud-optimized GeoTIFFs over HTTP, and
+  WFS / OGC API / ArcGIS service URLs — plus CSV geometry auto-detection
+  and plain-English error messages when a file can't be read.
+- **⚡ Quick Analysis:** pick variables and get descriptive statistics,
+  correlations, Moran's I, and regression in one click, each with a
+  plain-English interpretation of the actual numbers.
+- **✨ Auto-style:** one-click cartographic presets with sensible
+  classification and colourblind-safe palettes, with the reasoning shown.
+- **Teaching layer:** guided exercises with self-checking, and code-reveal
+  (the geopandas/PySAL equivalent of GUI operations).
+- **Correctness:** the spatial-statistics core is now validated by a test
+  suite against independent references (PySAL/esda and analytic cases),
+  running in CI on every push.
+- MIT-licensed; README reorganized around a single student install path
+  and a one-command developer setup (`./start.sh`).
+
+---
+
 # Cartolith — GIS & Teaching update
 
 This brings GeoLibre-style GIS power into Cartolith, reworked around Cartolith's own
