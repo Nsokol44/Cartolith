@@ -1,0 +1,11 @@
+# Test-only dependencies for the backend validation suite.
+# Install with:  pip install -r requirements.txt -r requirements-dev.txt
+# (CI does exactly this — see .github/workflows/tests.yml.)
+#
+# Runtime dependencies live in requirements.txt. In particular mapclassify
+# and openpyxl are RUNTIME deps (carto_presets.py, Excel loading) and are
+# already declared there; the packages below are needed only to test:
+pytest>=8.0        # test runner
+httpx>=0.27        # required by fastapi's TestClient
+esda>=2.1          # independent cross-check of Moran's I / Geary's C / LISA
+libpysal>=4.9      # spatial weights used by the esda cross-checks
