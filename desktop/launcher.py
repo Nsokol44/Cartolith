@@ -36,6 +36,63 @@ sys.path.insert(0, os.path.join(BASE_DIR, "backend"))
 from main import app  # noqa: E402  (existing FastAPI app, untouched)
 from fastapi.staticfiles import StaticFiles
 
+# ---------------------------------------------------------------------
+# Auto-shutdown: the frontend pings /__heartbeat__ every few seconds
+# while a tab is open, and fires a "closing" beacon on tab close/refresh.
+# A background thread here watches both signals and exits the whole
+# process once it's confident no browser tab is left open -- so closing
+# the browser is enough; nobody has to remember to close a console
+# window separately.
+#
+# These routes MUST be registered before app.mount("/", StaticFiles...)
+# below -- Starlette checks routes in registration order, and a mount at
+# "/" matches every path as a prefix, so it would otherwise swallow
+# these requests before they ever reach this handler.
+# ---------------------------------------------------------------------
+_last_heartbeat = time.time()
+_closing_since = None
+_shutdown_lock = threading.Lock()
+
+
+@app.post("/__heartbeat__")
+async def _heartbeat():
+    global _last_heartbeat, _closing_since
+    with _shutdown_lock:
+        _last_heartbeat = time.time()
+        _closing_since = None  # any live tab cancels a pending shutdown
+    return {"ok": True}
+
+
+@app.post("/__closing__")
+async def _closing():
+    # Sent via navigator.sendBeacon on pagehide (tab close OR refresh).
+    # We don't shut down immediately, since a refresh triggers this too --
+    # we just start a short grace-period timer that a fresh heartbeat
+    # (from the reloaded page) will cancel.
+    global _closing_since
+    with _shutdown_lock:
+        _closing_since = time.time()
+    return {"ok": True}
+
+
+def _watch_for_shutdown(idle_timeout=20, close_grace_period=3):
+    while True:
+        time.sleep(2)
+        with _shutdown_lock:
+            idle = time.time() - _last_heartbeat
+            closing_elapsed = (
+                time.time() - _closing_since if _closing_since else None
+            )
+        if closing_elapsed is not None and closing_elapsed > close_grace_period:
+            print("[launcher] Browser tab closed -- shutting down.")
+            os._exit(0)
+        if idle > idle_timeout:
+            print("[launcher] No browser activity detected -- shutting down.")
+            os._exit(0)
+
+
+threading.Thread(target=_watch_for_shutdown, daemon=True).start()
+
 FRONTEND_DIST = os.path.join(BASE_DIR, "frontend", "dist")
 
 if os.path.isdir(FRONTEND_DIST):
@@ -83,7 +140,8 @@ def main():
     webbrowser.open(url)
 
     print(f"[launcher] Cartolith is running at {url}")
-    print("[launcher] Close this window / press Ctrl+C to stop the server.")
+    print("[launcher] This will close automatically when you close the browser tab.")
+    print("[launcher] (You can also close this window or press Ctrl+C to stop it manually.)")
 
     # No native window to hold the process open (we're just a background
     # server now), so block on the server thread instead.

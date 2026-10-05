@@ -1,0 +1,147 @@
+name: Build Cartolith Desktop App (Tauri)
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  workflow_dispatch: {}
+
+jobs:
+  build:
+    timeout-minutes: 90
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            triple: x86_64-pc-windows-msvc
+            artifact_name: Cartolith-windows
+          - os: macos-15
+            triple: aarch64-apple-darwin
+            artifact_name: Cartolith-macos-apple-silicon
+          - os: macos-15-intel
+            triple: x86_64-apple-darwin
+            artifact_name: Cartolith-macos-intel
+          # Linux temporarily disabled -- re-add to bring it back:
+          # - os: ubuntu-latest
+          #   triple: x86_64-unknown-linux-gnu
+          #   artifact_name: Cartolith-linux
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+          cache-dependency-path: frontend/package-lock.json
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+          cache-dependency-path: backend/requirements.txt
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.triple }}
+
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Install Linux system dependencies (Tauri + webview)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            build-essential \
+            curl \
+            wget \
+            file \
+            libxdo-dev \
+            libssl-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            patchelf
+
+      - name: Build frontend
+        working-directory: frontend
+        run: |
+          npm ci
+          npm run build
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r backend/requirements.txt pyinstaller
+
+      - name: Build backend sidecar
+        working-directory: desktop-tauri
+        run: pyinstaller backend.spec --noconfirm
+
+      - name: Rename sidecar with target triple (Unix)
+        if: runner.os != 'Windows'
+        run: |
+          mkdir -p src-tauri/binaries
+          cp desktop-tauri/dist/cartolith-backend "src-tauri/binaries/cartolith-backend-${{ matrix.triple }}"
+          chmod +x "src-tauri/binaries/cartolith-backend-${{ matrix.triple }}"
+
+      - name: Rename sidecar with target triple (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path src-tauri/binaries | Out-Null
+          Copy-Item "desktop-tauri/dist/cartolith-backend.exe" "src-tauri/binaries/cartolith-backend-${{ matrix.triple }}.exe"
+
+      - name: Generate app icons
+        run: npx --yes @tauri-apps/cli@2 icon src-tauri/icons/app-icon.png
+
+      - name: Build Tauri app
+        run: npx --yes @tauri-apps/cli@2 build --target ${{ matrix.triple }}
+        env:
+          CI: true
+
+      - name: Package macOS build
+        if: runner.os == 'macOS'
+        working-directory: src-tauri/target/${{ matrix.triple }}/release/bundle/macos
+        run: |
+          cp "$GITHUB_WORKSPACE/desktop-tauri/Install and Run Cartolith.command" .
+          chmod +x "Install and Run Cartolith.command"
+          zip -r "../${{ matrix.artifact_name }}.zip" "Cartolith.app" "Install and Run Cartolith.command"
+
+      - name: Package Linux build
+        if: runner.os == 'Linux'
+        working-directory: src-tauri/target/${{ matrix.triple }}/release/bundle
+        run: |
+          mkdir -p out
+          [ -d appimage ] && cp appimage/*.AppImage out/ || true
+          [ -d deb ] && cp deb/*.deb out/ || true
+          cd out && zip -r "../${{ matrix.artifact_name }}.zip" .
+
+      - name: Package Windows build
+        if: runner.os == 'Windows'
+        shell: pwsh
+        working-directory: src-tauri/target/${{ matrix.triple }}/release/bundle
+        run: |
+          New-Item -ItemType Directory -Force -Path out | Out-Null
+          if (Test-Path msi) { Copy-Item msi/*.msi out/ }
+          if (Test-Path nsis) { Copy-Item nsis/*.exe out/ }
+          Compress-Archive -Path out/* -DestinationPath "${{ matrix.artifact_name }}.zip"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact_name }}
+          path: src-tauri/target/${{ matrix.triple }}/release/bundle/${{ matrix.artifact_name }}.zip
+
+      - name: Attach to release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: src-tauri/target/${{ matrix.triple }}/release/bundle/${{ matrix.artifact_name }}.zip

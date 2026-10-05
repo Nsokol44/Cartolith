@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { useApp } from '../store'
 import { sqlApi } from '../api'
+import { fireLessonEvent } from '../lesson-events'
 import { InfoDot, ConceptCard, useSampleLoader } from './Learn'
 
 export default function SqlLabTab({ go }) {
@@ -37,6 +38,8 @@ export default function SqlLabTab({ go }) {
     try {
       const r = await sqlApi.query(q, 1000)
       setResult(r)
+      fireLessonEvent('sql:ran')
+      if (/\bgroup\s+by\b/i.test(q)) fireLessonEvent('sql:groupby')
       setHistory(h => [q, ...h.filter(x => x !== q)].slice(0, 12))
     } catch (e) {
       setError(e.message?.split('\n')[0] || String(e)); setResult(null)

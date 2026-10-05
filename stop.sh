@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 echo "◈  Stopping Cartolith..."
 
+if ! command -v lsof &>/dev/null; then
+  echo "  (lsof not available — using process-name matching only;"
+  echo "   on Windows/Git Bash this is normal.)"
+fi
 for PORT in 8000 5173; do
   PIDS=$(lsof -ti tcp:$PORT 2>/dev/null || true)
   if [ -n "$PIDS" ]; then

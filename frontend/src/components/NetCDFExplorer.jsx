@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from "react"
-import { netcdfApi, frameApi } from "../api"
+import { netcdfApi, frameApi, getBase } from "../api"
+import { fireLessonEvent } from "../lesson-events"
 
 const COLORMAPS = ["viridis","plasma","inferno","magma","turbo","rdylgn","spectral","blues","reds","coolwarm","gray","terrain"]
 const FPS_OPTIONS = [1, 2, 4, 6, 8, 12, 24]
@@ -57,18 +58,18 @@ export default function NetCDFExplorer({ datasetId, netcdfMeta, rasterMeta, onBa
   function makeFrameUrl(t, l, b, v, cm) {
     const ts = Date.now() // cache-bust so browser always fetches fresh
     if (isRaster)
-      return `/api/raster/${encodeURIComponent(datasetId)}/animation_frame?band=${b}&colormap=${cm}&width=500&_ts=${ts}`
-    return `/api/netcdf/${encodeURIComponent(datasetId)}/animation_frame?variable=${encodeURIComponent(v)}&time_index=${t}&level_index=${l}&colormap=${cm}&width=500&_ts=${ts}`
+      return `${getBase()}/api/raster/${encodeURIComponent(datasetId)}/animation_frame?band=${b}&colormap=${cm}&width=500&_ts=${ts}`
+    return `${getBase()}/api/netcdf/${encodeURIComponent(datasetId)}/animation_frame?variable=${encodeURIComponent(v)}&time_index=${t}&level_index=${l}&colormap=${cm}&width=500&_ts=${ts}`
   }
 
   // ── Fetch stats (separate from image) ─────────────────────────────────
   async function fetchStats(t, l, b, v, cm) {
     try {
       if (isRaster) {
-        const res = await fetch(`/api/raster/${encodeURIComponent(datasetId)}/band_slice?band=${b}&colormap=${cm}`)
+        const res = await fetch(`${getBase()}/api/raster/${encodeURIComponent(datasetId)}/band_slice?band=${b}&colormap=${cm}`)
         if (res.ok) { const d = await res.json(); setFrameStats(d.stats) }
       } else {
-        const res = await fetch(`/api/netcdf/${encodeURIComponent(datasetId)}/slice`, {
+        const res = await fetch(`${getBase()}/api/netcdf/${encodeURIComponent(datasetId)}/slice`, {
           method: "POST", headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ variable: v, time_index: t, level_index: l, colormap: cm })
         })
@@ -168,7 +169,7 @@ export default function NetCDFExplorer({ datasetId, netcdfMeta, rasterMeta, onBa
         level_index: levelIdx,
       }
       setExportPct(10)
-      const resp = await fetch('/api/animation/export', {
+      const resp = await fetch(`${getBase()}/api/animation/export`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
@@ -283,7 +284,7 @@ export default function NetCDFExplorer({ datasetId, netcdfMeta, rasterMeta, onBa
             </div>
             <input type="range" min={0} max={nTimes-1} value={timeIdx}
               onChange={e => {
-                const t=+e.target.value; setTimeIdx(t)
+                const t=+e.target.value; setTimeIdx(t); fireLessonEvent('netcdf:timestep')
                 refreshFrame(t, levelIdx, bandIdx, selVar, colormap, true)
               }}
               style={{ width:"100%" }} />

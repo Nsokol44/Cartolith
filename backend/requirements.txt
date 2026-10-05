@@ -9,6 +9,7 @@ scipy>=1.13.0
 statsmodels>=0.14.0
 scikit-learn>=1.4.0
 geopandas>=0.14.0
+mapclassify>=2.6.0   # classification schemes (quantile, jenks...) for gdf.plot(scheme=...)
 fiona>=1.9.0
 shapely>=2.0.0
 pyproj>=3.6.0
@@ -18,6 +19,9 @@ xarray>=2023.1.0
 laspy[lazrs]>=2.5.0
 Pillow>=10.0.0
 matplotlib>=3.7.0
+contextily>=1.5.0   # web basemap tiles for matplotlib/geopandas maps
 duckdb>=0.10.0
 h3>=4.0.0
 scikit-image>=0.22.0
+cfgrib>=0.9.10       # GRIB2 (weather/climate) via ecCodes — added 2026-10, see ENHANCEMENT_PLAN.md
+pyogrio>=0.7         # geopandas IO engine used for layer listing (gpkg/kml/gpx/…)

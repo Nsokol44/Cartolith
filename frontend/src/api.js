@@ -1,6 +1,59 @@
-// All requests go through Vite's proxy (/api → http://localhost:8000)
-// Never hardcode the backend port here — that's what caused the "Not Found" error.
-const BASE = ''   // empty = same origin, proxy handles routing to port 8000
+import { invoke } from '@tauri-apps/api/core'
+
+// In dev mode (`npm run dev`) and in the old same-origin desktop build
+// (desktop/launcher.py), all requests go through Vite's proxy or a
+// same-origin static mount, so an empty BASE (same origin) is correct.
+//
+// In the Tauri build, the frontend is served by the native webview from
+// its own origin (tauri://localhost / https://tauri.localhost) while the
+// backend runs as a separate sidecar process on 127.0.0.1:<port>. In that
+// case BASE gets set to that sidecar's actual address by initBackend()
+// below, which main.jsx calls once before the app renders.
+//
+// Never hardcode the backend port here — that's what caused the
+// "Not Found" error in the original desktop build.
+let BASE = ''
+
+/**
+ * The resolved backend origin (e.g. 'http://127.0.0.1:54321' under Tauri,
+ * '' in dev mode / same-origin builds). Use this for anything that builds
+ * a URL directly (like <img src=...>) instead of going through request(),
+ * e.g. the frame-preview URLs in frameApi below — a hardcoded relative
+ * '/api/...' string works in dev mode but silently 404s under Tauri.
+ */
+export function getBase() { return BASE }
+
+const isTauri = () => typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window
+
+/**
+ * Resolve which backend this app should talk to. Must be awaited before
+ * the very first API call. Safe to call in non-Tauri contexts (no-op).
+ */
+export async function initBackend({ onStatus } = {}) {
+  if (!isTauri()) return BASE // dev server / old desktop build: unchanged
+
+  const port = await invoke('get_backend_port')
+  BASE = `http://127.0.0.1:${port}`
+
+  // The sidecar can take a while to bind — PyInstaller's "onefile" mode
+  // has to self-extract the entire bundled Python/GDAL/geospatial stack
+  // to a temp folder on every launch, which can take well over 30s on a
+  // cold disk cache. Poll /api/health generously rather than firing the
+  // app's first real request (or an error message) at a backend that
+  // just needs more time.
+  const deadline = Date.now() + 120_000
+  while (Date.now() < deadline) {
+    try {
+      const res = await fetch(BASE + '/api/health')
+      if (res.ok) return BASE
+    } catch {
+      // not up yet, keep polling
+    }
+    onStatus?.('Starting Cartolith…')
+    await new Promise((r) => setTimeout(r, 250))
+  }
+  throw new Error('Cartolith backend did not start in time.')
+}
 
 async function request(path, options = {}) {
   let res
@@ -51,7 +104,7 @@ export function uploadWithProgress(file, name, onProgress) {
     if (name) fd.append('name', name)
 
     const xhr = new XMLHttpRequest()
-    xhr.open('POST', '/api/datasets/upload')   // relative — goes through proxy
+    xhr.open('POST', BASE + '/api/datasets/upload')   // relative in dev/proxy, absolute under Tauri
 
     xhr.upload.addEventListener('progress', (e) => {
       if (e.lengthComputable) onProgress?.(Math.round((e.loaded / e.total) * 100))
@@ -115,6 +168,31 @@ export const api = {
 
   analyze: (payload) =>
     request('/api/analyze', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    }),
+
+  // Which analyses can run on the current selection, and why not. Used to
+  // gate the UI before the user clicks rather than failing afterwards.
+  analysisCapabilities: (payload) =>
+    request('/api/analyze/capabilities', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    }),
+
+  // One-call novice path: valid quick methods + plain-English readings.
+  quickAnalysis: (payload) =>
+    request('/api/quick-analysis', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    }),
+
+  // One-call styled layer spec (scheme/bins/colourblind-safe palette).
+  cartoPreset: (payload) =>
+    request('/api/carto/preset', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),
@@ -195,12 +273,15 @@ export function exportDataset(id, fmt = 'csv') {
 
 // ── Animation / band frame URLs (direct image URLs, not JSON) ─────────────
 export const frameApi = {
-  // Returns a direct URL to a PNG frame — used as <img src=...>
+  // Returns a direct URL to a PNG frame — used as <img src=...>. Must use
+  // getBase() (not a bare relative path) so this still resolves correctly
+  // when the frontend and backend are on different origins, as they are
+  // under Tauri.
   netcdfFrameUrl: (id, variable, timeIndex, levelIndex = 0, colormap = 'viridis', width = 500) =>
-    `/api/netcdf/${encodeURIComponent(id)}/animation_frame?variable=${encodeURIComponent(variable)}&time_index=${timeIndex}&level_index=${levelIndex}&colormap=${colormap}&width=${width}`,
+    `${getBase()}/api/netcdf/${encodeURIComponent(id)}/animation_frame?variable=${encodeURIComponent(variable)}&time_index=${timeIndex}&level_index=${levelIndex}&colormap=${colormap}&width=${width}`,
 
   rasterFrameUrl: (id, band, colormap = 'viridis', width = 500) =>
-    `/api/raster/${encodeURIComponent(id)}/animation_frame?band=${band}&colormap=${colormap}&width=${width}`,
+    `${getBase()}/api/raster/${encodeURIComponent(id)}/animation_frame?band=${band}&colormap=${colormap}&width=${width}`,
 
   rasterBandSlice: (id, band, colormap = 'viridis') =>
     request(`/api/raster/${encodeURIComponent(id)}/band_slice?band=${band}&colormap=${colormap}`),
@@ -290,4 +371,35 @@ export const samplesApi = {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ id }),
     }),
+}
+
+// ── Python notebook ─────────────────────────────────────────────────────────
+export const notebookApi = {
+  status: () => request('/api/notebook/status'),
+
+  execute: (code) => request('/api/notebook/execute', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ code }),
+  }),
+
+  reset: () => request('/api/notebook/reset', { method: 'POST' }),
+
+  // Export streams a file back, so this bypasses request() (which parses JSON)
+  // and triggers a browser download directly.
+  download: async (cells, format, name) => {
+    const res = await fetch(`${getBase()}/api/notebook/export`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ cells, format, name }),
+    })
+    if (!res.ok) throw new Error(`Export failed (${res.status})`)
+    const blob = await res.blob()
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `${(name || 'cartolith-notebook').replace(/[^A-Za-z0-9_.-]/g, '_')}.${format}`
+    document.body.appendChild(a)
+    a.click()
+    a.remove()
+    URL.revokeObjectURL(url)
+  },
 }

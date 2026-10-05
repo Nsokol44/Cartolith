@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { useApp } from '../store'
-import { cartoApi } from '../api'
+import { api, cartoApi, getBase } from '../api'
+import { fireLessonEvent } from '../lesson-events'
 
 // ── Leaflet loaded via CDN script tag injected once ──────────────────────────
 function useLeaflet(onReady) {
@@ -145,6 +146,7 @@ export default function CartographyTab() {
     label: '',
   })
 
+  const [presetSpec, setPresetSpec] = useState(null)
   const [clipDrawing, setClipDrawing] = useState(false)
   const [clipStart, setClipStart] = useState(null)
   const [clipPreview, setClipPreview] = useState(null) // {min_lon,min_lat,max_lon,max_lat}
@@ -479,12 +481,13 @@ export default function CartographyTab() {
                        shpTimeSteps: form.shp_time_steps || [],
                        shpTimeIdx: form.shp_time_idx || 0 }
     setLayers(ls => [...ls, newLayer])
+    fireLessonEvent('layer:added')
     setAddingLayer(false)
 
     try {
       // If this is a NetCDF dataset, push the correct time band first
       if (ds?.netcdf_meta && timeIdx > 0) {
-        await fetch(`/api/netcdf/${encodeURIComponent(form.dataset_id)}/load_time_band`, {
+        await fetch(`${getBase()}/api/netcdf/${encodeURIComponent(form.dataset_id)}/load_time_band`, {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ time_index: timeIdx, level_index: 0 })
         })
@@ -519,6 +522,9 @@ export default function CartographyTab() {
           value_col: form.value_col || null, colormap: form.colormap,
           n_classes: form.n_classes, classification: form.classification,
           max_features: form.max_features, clip_bbox: form.use_clip ? form.clip_bbox : null,
+          // Without these the backend renders time step 0 regardless of which
+          // step the form is showing.
+          time_index: timeIdx, variable: form.variable || null,
         })
       }
 
@@ -682,7 +688,7 @@ export default function CartographyTab() {
                       setLayers(ls => ls.map(l => l.id === layer.id ? { ...l, currentTimeIdx: t } : l))
                       // Push to backend and re-fetch layer data
                       try {
-                        await fetch(`/api/netcdf/${encodeURIComponent(layer.config.dataset_id)}/load_time_band`, {
+                        await fetch(`${getBase()}/api/netcdf/${encodeURIComponent(layer.config.dataset_id)}/load_time_band`, {
                           method: 'POST', headers: { 'Content-Type': 'application/json' },
                           body: JSON.stringify({ time_index: t, level_index: 0 })
                         })
@@ -691,11 +697,23 @@ export default function CartographyTab() {
                         if (layer.config.layer_type === 'vector') {
                           newData = await cartoApi.vector({ dataset_id: layer.config.dataset_id, value_col: layer.config.value_col||null, colormap: layer.config.colormap, n_classes: layer.config.n_classes, classification: layer.config.classification, max_features: layer.config.max_features })
                         } else {
-                          newData = await cartoApi.layer({ dataset_id: layer.config.dataset_id, layer_type: layer.config.layer_type, lat_col: layer.config.lat_col||null, lon_col: layer.config.lon_col||null, value_col: layer.config.value_col||null, colormap: layer.config.colormap, n_classes: layer.config.n_classes, classification: layer.config.classification, max_features: layer.config.max_features })
+                          newData = await cartoApi.layer({
+                            dataset_id: layer.config.dataset_id, layer_type: layer.config.layer_type,
+                            lat_col: layer.config.lat_col||null, lon_col: layer.config.lon_col||null,
+                            value_col: layer.config.value_col||null, colormap: layer.config.colormap,
+                            n_classes: layer.config.n_classes, classification: layer.config.classification,
+                            max_features: layer.config.max_features,
+                            // The entire point of moving the slider: without
+                            // time_index the backend re-renders step 0 every time.
+                            time_index: t, variable: layer.config.variable || null,
+                          })
                         }
-                        setLayers(ls => ls.map(l => l.id === layer.id ? { ...l, data: newData } : l))
+                        setLayers(ls => ls.map(l => l.id === layer.id ? { ...l, data: newData, error: null } : l))
                         renderLayer(layer.id, newData, layer.config)
-                      } catch {}
+                      } catch (err) {
+                        setLayers(ls => ls.map(l => l.id === layer.id
+                          ? { ...l, error: err.message || 'Could not load that time step' } : l))
+                      }
                     }}
                     style={{ width: '100%', marginTop: 2 }} />
                 </div>
@@ -875,6 +893,37 @@ export default function CartographyTab() {
                   <option value="">None — use solid color</option>
                   {numCols.map(c => <option key={c} value={c}>{c}</option>)}
                 </select>
+                {form.value_col && (
+                  <button className="btn" style={{ marginTop: 6 }}
+                    title="Ask the backend preset: picks a defensible scheme and a colourblind-safe palette for this column"
+                    onClick={async () => {
+                      try {
+                        const spec = await api.cartoPreset({ dataset_id: form.dataset_id, column: form.value_col, kind: 'auto' })
+                        setPresetSpec(spec)
+                        if (spec.ok && spec.kind === 'choropleth') {
+                          setForm(f => ({ ...f, classification: spec.scheme === 'Quantiles' ? 'quantile' : f.classification, n_classes: spec.bins.length - 1 }))
+                        }
+                      } catch (e) { setPresetSpec({ ok: false, reason: e.message, suggestion: '' }) }
+                    }}>
+                    ✨ Auto-style this column
+                  </button>
+                )}
+                {presetSpec && (
+                  <div style={{ marginTop: 6, fontSize: 11, lineHeight: 1.5, color: 'var(--txt2)' }}>
+                    {presetSpec.ok ? (
+                      <>
+                        <div><strong>{presetSpec.kind}</strong>{presetSpec.scheme ? ` · ${presetSpec.scheme}` : ''} · palette: {presetSpec.palette_name}</div>
+                        <div style={{ display: 'flex', gap: 3, margin: '4px 0' }}>
+                          {(presetSpec.palette || []).map((c, i) => <span key={i} style={{ width: 16, height: 12, background: c, borderRadius: 2, border: '1px solid var(--bdr)' }} />)}
+                        </div>
+                        <div>{presetSpec.why}</div>
+                        {presetSpec.legend_labels && <div style={{ color: 'var(--txt3)' }}>{presetSpec.legend_labels.join(' · ')}</div>}
+                      </>
+                    ) : (
+                      <div>{presetSpec.reason} {presetSpec.suggestion}</div>
+                    )}
+                  </div>
+                )}
               </div>
             )}
 
@@ -912,14 +961,14 @@ export default function CartographyTab() {
                   <div className="grid-2" style={{ marginBottom: 8 }}>
                     <div>
                       <label className="field-label">Classification</label>
-                      <select value={form.classification} onChange={e => setForm(f => ({ ...f, classification: e.target.value }))}>
+                      <select value={form.classification} onChange={e => { setForm(f => ({ ...f, classification: e.target.value })); fireLessonEvent('classification:changed') }}>
                         <option value="quantile">Quantile</option>
                         <option value="equal">Equal interval</option>
                       </select>
                     </div>
                     <div>
                       <label className="field-label">Classes</label>
-                      <select value={form.n_classes} onChange={e => setForm(f => ({ ...f, n_classes: +e.target.value }))}>
+                      <select value={form.n_classes} onChange={e => { setForm(f => ({ ...f, n_classes: +e.target.value })); fireLessonEvent('classes:changed') }}>
                         {[3,4,5,6,7,8].map(n => <option key={n} value={n}>{n}</option>)}
                       </select>
                     </div>

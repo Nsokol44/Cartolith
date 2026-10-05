@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Cartolith v5 — setup and launch
+# Cartolith 1.4.11 — setup and launch
 # NOTE: intentionally NO "set -e" — we handle errors manually
 
 BACKEND_PORT=8000
@@ -7,7 +7,7 @@ FRONTEND_PORT=5173
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 echo ""
-echo "◈  Cartolith v5"
+echo "◈  Cartolith 1.4.11"
 echo "──────────────────────────────────"
 
 # ── Free ports if occupied ─────────────────────────────────────────────────
@@ -33,9 +33,25 @@ echo "→ Setting up Python backend..."
 cd "$SCRIPT_DIR/backend"
 
 if ! command -v python3 &>/dev/null; then
-  echo "✗  Python 3 not found. Install Python 3.10+ and try again."
+  echo "✗  Python 3 not found. Install Python 3.10-3.12 and try again:"
+  echo "     macOS: brew install python@3.12   Windows: python.org (tick 'Add to PATH')"
   exit 1
 fi
+
+# The geospatial wheels (geopandas/rasterio/fiona) are only prebuilt for
+# Python 3.10-3.12. On 3.13+ pip falls back to source builds that need a
+# system GDAL and usually fail — say so in plain English instead of
+# letting pip print a compiler error.
+PYVER=$(python3 -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')
+case "$PYVER" in
+  3.10|3.11|3.12) ;;
+  *)
+    echo "✗  Python $PYVER found, but Cartolith needs Python 3.10-3.12."
+    echo "   Newer Pythons force the GIS libraries to build from source, which"
+    echo "   fails without a system GDAL install. Install Python 3.12 and make"
+    echo "   sure 'python3' points at it, then run ./start.sh again."
+    exit 1 ;;
+esac
 
 if [ ! -d ".venv" ]; then
   echo "  Creating virtual environment..."
@@ -43,21 +59,35 @@ if [ ! -d ".venv" ]; then
 fi
 
 source .venv/bin/activate
-echo "  Checking Python dependencies..."
-pip install -q --upgrade pip
-pip install -q -r requirements.txt
+# Idempotent: only touch pip when requirements.txt actually changed.
+REQ_HASH=$(python3 -c "import hashlib; print(hashlib.sha256(open('requirements.txt','rb').read()).hexdigest())")
+if [ "$(cat .venv/.cartolith-req-hash 2>/dev/null)" != "$REQ_HASH" ]; then
+  echo "  Installing Python dependencies (first run or requirements changed)..."
+  pip install -q --upgrade pip
+  pip install -q -r requirements.txt
+  echo "$REQ_HASH" > .venv/.cartolith-req-hash
+else
+  echo "  Python dependencies unchanged — skipping install."
+fi
 echo "  ✓  Python deps ready"
 
 # ── Node deps ──────────────────────────────────────────────────────────────
 echo "→ Setting up frontend..."
 cd "$SCRIPT_DIR/frontend"
 if ! command -v node &>/dev/null; then
-  echo "✗  Node.js not found. Install Node 18+ and try again."
+  echo "✗  Node.js not found. Install Node 18 or newer from nodejs.org and try again."
   exit 1
 fi
-if [ ! -d "node_modules" ]; then
+NODE_MAJOR=$(node -e 'console.log(process.versions.node.split(".")[0])')
+if [ "$NODE_MAJOR" -lt 18 ]; then
+  echo "✗  Node $NODE_MAJOR found, but the frontend needs Node 18+. Upgrade at nodejs.org."
+  exit 1
+fi
+# Idempotent: reinstall only when package.json changed since last install.
+if [ ! -d "node_modules" ] || [ package.json -nt node_modules/.cartolith-installed ]; then
   echo "  Installing Node dependencies (first time ~30s)..."
   npm install --silent
+  touch node_modules/.cartolith-installed
 fi
 echo "  ✓  Node deps ready"
 

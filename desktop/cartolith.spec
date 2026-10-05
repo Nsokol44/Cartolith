@@ -25,15 +25,20 @@ COLLECT_ALL_PACKAGES = [
     "rasterio",
     "pyproj",
     "geopandas",
+    "mapclassify",
     "shapely",
     "scipy",
     "sklearn",
     "statsmodels",
     "skimage",
     "netCDF4",
+    "xarray",
+    "matplotlib",
+    "contextily",
     "h3",
     "laspy",
     "pyarrow",
+    "duckdb",
 ]
 
 datas, binaries, hiddenimports = [], [], []

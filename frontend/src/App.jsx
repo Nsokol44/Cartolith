@@ -1,5 +1,7 @@
 import { useState, useEffect } from "react"
 import { AppProvider, useApp } from "./store"
+import LessonPanel from "./components/LessonPanel"
+import NotebookTab from "./components/NotebookTab"
 import { api } from "./api"
 import Topbar from "./components/Topbar"
 import Sidebar from "./components/Sidebar"
@@ -49,6 +51,7 @@ function AppInner() {
   const { state, dispatch } = useApp()
   const [activeTab, setActiveTab] = useState("Explore")
   const [learnOpen, setLearnOpen] = useState(false)
+  const [lessonsOpen, setLessonsOpen] = useState(false)
   const [welcomeDismissed, setWelcomeDismissed] = useState(false)
   const sample = useSampleLoader(dispatch)
 
@@ -56,6 +59,27 @@ function AppInner() {
     api.health()
       .then(d => dispatch({ type: "SET_BACKEND", online: true, capabilities: d.capabilities }))
       .catch(() => dispatch({ type: "SET_BACKEND", online: false }))
+  }, [])
+
+  // Desktop-app auto-shutdown: tells the local Python server "a tab is
+  // still open" every few seconds, and flags "a tab just closed" on
+  // pagehide (covers both tab close and full-page refresh). No-ops
+  // harmlessly if these routes don't exist, e.g. when hosted as a
+  // normal web app instead of run via the desktop launcher.
+  useEffect(() => {
+    const ping = () => fetch("/__heartbeat__", { method: "POST" }).catch(() => {})
+    ping()
+    const interval = setInterval(ping, 4000)
+
+    const onHide = () => {
+      if (navigator.sendBeacon) navigator.sendBeacon("/__closing__")
+    }
+    window.addEventListener("pagehide", onHide)
+
+    return () => {
+      clearInterval(interval)
+      window.removeEventListener("pagehide", onHide)
+    }
   }, [])
 
   const dsCount = Object.keys(state.datasets).length
@@ -71,11 +95,12 @@ function AppInner() {
     Explore: <ExploreTab go={setActiveTab} />, Statistics: <StatisticsTab />, Visualize: <VisualizeTab />,
     Analyze: <AnalyzeTab />, Compare: <CompareTab />, Cartography: <CartographyTab />,
     "SQL Lab": <SqlLabTab go={setActiveTab} />, Geoprocess: <GeoprocessTab go={setActiveTab} />,
+    Notebook: <NotebookTab />,
   }
 
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100vh", overflow: "hidden" }}>
-      <Topbar activeTab={activeTab} setActiveTab={setActiveTab} onOpenLearn={() => setLearnOpen(true)} />
+      <Topbar activeTab={activeTab} setActiveTab={setActiveTab} onOpenLearn={() => setLearnOpen(true)} onOpenLessons={() => setLessonsOpen(o => !o)} lessonsOpen={lessonsOpen} />
       <div style={{ display: "flex", flex: 1, overflow: "hidden" }}>
         <Sidebar />
         <div style={{ flex: 1, overflow: "hidden", display: "flex", flexDirection: "column" }}>
@@ -87,6 +112,12 @@ function AppInner() {
           )}
           <div style={{ flex: 1, overflow: "hidden" }}>{tabContent[activeTab]}</div>
         </div>
+        <LessonPanel
+          open={lessonsOpen}
+          onClose={() => setLessonsOpen(false)}
+          activeTab={activeTab}
+          setActiveTab={setActiveTab}
+        />
       </div>
       <LearnDrawer open={learnOpen} onClose={() => setLearnOpen(false)} onLoadSample={() => sample.load("both")} />
       {showWelcome && <Welcome onClose={() => setWelcomeDismissed(true)} onLoadSample={welcomeLoad} loading={sample.loading} />}

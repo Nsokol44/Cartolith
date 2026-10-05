@@ -78,13 +78,23 @@ export default function CompareTab() {
     <div className="empty-state"><div>Load a second dataset to enable comparison. Use <strong>+ Add another</strong> in the sidebar.</div></div>
   )
 
-  // Find common numeric columns
-  const commonCols = datasets.length > 0
-    ? datasets[0].columns?.filter(c =>
-        datasets[0].types?.[c] === 'numeric' &&
-        datasets.slice(1).every(d => d.columns?.includes(c) && d.types?.[c] === 'numeric')
-      ) || []
-    : []
+  // Numeric columns shared by at least TWO datasets.
+  //
+  // This used to require a column be numeric in EVERY loaded dataset, which
+  // meant that loading one unrelated file (a NetCDF, say) wiped out the whole
+  // comparison — the intersection went empty and the tab claimed there were no
+  // numerics at all, even when two datasets shared plenty. Comparison only
+  // needs a pair, so that is the bar.
+  const numericIn = (d) => (d.columns || []).filter(c => d.types?.[c] === 'numeric')
+
+  const colOwners = {}   // column -> [datasets that have it as numeric]
+  datasets.forEach(d => numericIn(d).forEach(c => {
+    (colOwners[c] ||= []).push(d)
+  }))
+
+  const commonCols = Object.keys(colOwners)
+    .filter(c => colOwners[c].length >= 2)
+    .sort((a, b) => colOwners[b].length - colOwners[a].length || a.localeCompare(b))
 
   const allNumCols = [...new Set(datasets.flatMap(d => d.columns?.filter(c => d.types?.[c] === 'numeric') || []))]
 
@@ -137,7 +147,22 @@ export default function CompareTab() {
       {compType === 'stats' && (
         <div>
           {commonCols.length === 0 ? (
-            <div className="empty-state"><div>No common numeric columns found across all datasets.</div></div>
+            <div className="empty-state" style={{ textAlign: 'center', maxWidth: 520 }}>
+              <div style={{ marginBottom: 10 }}>
+                No numeric column appears in two or more of these datasets, so there is
+                nothing to line up side by side.
+              </div>
+              {allNumCols.length > 0 && (
+                <div style={{ fontSize: 11.5, color: 'var(--txt3)', lineHeight: 1.6 }}>
+                  Numeric columns found, but each only in one dataset:{' '}
+                  {allNumCols.slice(0, 12).join(', ')}
+                  {allNumCols.length > 12 ? '…' : ''}.
+                  <br />
+                  Try <strong>Schema compare</strong> to see them all, or join the datasets
+                  in Geoprocess first so they share a column.
+                </div>
+              )}
+            </div>
           ) : (
             <div style={{ overflowX: 'auto' }}>
               <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
