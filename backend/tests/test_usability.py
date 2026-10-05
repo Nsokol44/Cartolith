@@ -60,6 +60,7 @@ def test_quick_analysis_endpoint():
     from fastapi.testclient import TestClient
     main.datasets["grad"] = gradient_df()
     client = TestClient(main.app)
+    client.headers["X-Cartolith-Token"] = main.API_TOKEN  # writes require the session token
     r = client.post("/api/quick-analysis",
                     json={"dataset_id": "grad", "columns": ["value", "pop"]})
     assert r.status_code == 200
@@ -122,6 +123,7 @@ def test_preset_auto_and_endpoint():
     df["_geom_type"] = "Point"
     main.datasets["pts2"] = df
     client = TestClient(main.app)
+    client.headers["X-Cartolith-Token"] = main.API_TOKEN  # writes require the session token
     r = client.post("/api/carto/preset",
                     json={"dataset_id": "pts2", "column": "value"})
     body = r.json()

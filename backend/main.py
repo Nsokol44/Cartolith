@@ -1,9 +1,9 @@
 """
 Cartolith — Python Backend v5.0
 """
-from fastapi import FastAPI, UploadFile, File, HTTPException
+from fastapi import FastAPI, UploadFile, File, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import Response, StreamingResponse
+from fastapi.responses import Response, StreamingResponse, JSONResponse
 from pydantic import BaseModel
 from typing import Optional, List, Dict, Any
 import pandas as pd
@@ -88,7 +88,77 @@ except ImportError as e:
     HAS_DUCKDB = False; print(f"[startup] duckdb unavailable: {e}")
 
 app = FastAPI(title="Cartolith API", version="1.5.0")
-app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
+
+# ── Local-only security ─────────────────────────────────────────────────────
+# Threat model: this backend runs on a student's own machine, bound to
+# 127.0.0.1, and includes an endpoint (/api/notebook/execute) that runs
+# arbitrary Python. It must never be drivable by a random website open in
+# the student's browser, so two independent guards apply:
+#   1. CORS is an allowlist of the three legitimate local frontends (the
+#      Tauri webview, the Vite dev server, and the same-origin fallback
+#      launcher on any local port) — never "*".
+#   2. Every non-GET /api request must carry a per-launch session token in
+#      the X-Cartolith-Token header. A cross-origin page cannot read the
+#      token (the /api/session-token response is itself origin-gated and
+#      CORS-blocked for non-local origins) and cannot set the header
+#      without a CORS preflight its origin fails.
+# GET requests stay open: they are read-only, several are loaded through
+# <img> tags (animation frames) which cannot set headers, and CORS already
+# prevents non-local origins from reading the responses.
+_TAURI_ORIGINS = ["tauri://localhost", "https://tauri.localhost"]
+_LOCAL_ORIGIN_REGEX = r"^https?://(localhost|127\.0\.0\.1)(:\d+)?$"
+
+
+def _origin_allowed(origin: str) -> bool:
+    return origin in _TAURI_ORIGINS or re.fullmatch(_LOCAL_ORIGIN_REGEX, origin) is not None
+
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=_TAURI_ORIGINS,
+    allow_origin_regex=_LOCAL_ORIGIN_REGEX,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# Per-launch session token: CARTOLITH_API_TOKEN wins when set (launchers /
+# tests); otherwise a fresh token is generated at startup and written to
+# backend/.session_token (gitignored, 0600 where the OS supports it) so
+# local tooling can find it. The frontend itself fetches it from
+# /api/session-token, which only answers allowlisted local origins.
+import hmac as _hmac  # noqa: E402
+import secrets as _secrets  # noqa: E402
+
+API_TOKEN = os.environ.get("CARTOLITH_API_TOKEN") or _secrets.token_urlsafe(32)
+_TOKEN_FILE = Path(__file__).resolve().parent / ".session_token"
+try:
+    _TOKEN_FILE.write_text(API_TOKEN + "\n", encoding="utf-8")
+    os.chmod(_TOKEN_FILE, 0o600)
+except OSError:
+    pass  # read-only install dir — token still served via /api/session-token
+
+
+@app.middleware("http")
+async def _require_token_for_writes(request: Request, call_next):
+    if request.method not in ("GET", "HEAD", "OPTIONS") and request.url.path.startswith("/api/"):
+        sent = request.headers.get("x-cartolith-token", "")
+        if not _hmac.compare_digest(sent, API_TOKEN):
+            return JSONResponse(
+                status_code=401,
+                content={"detail": "Missing or invalid X-Cartolith-Token header. "
+                                   "The Cartolith frontend sends this automatically; "
+                                   "scripts should read backend/.session_token."},
+            )
+    return await call_next(request)
+
+
+@app.get("/api/session-token")
+def session_token(request: Request):
+    """Hand the session token to the legitimate local frontend only."""
+    origin = request.headers.get("origin")
+    if origin is not None and not _origin_allowed(origin):
+        raise HTTPException(status_code=403, detail="Origin not allowed.")
+    return {"token": API_TOKEN}
 
 try:
     import starlette.formparsers as _fp
@@ -3463,4 +3533,4 @@ def load_sample(body: dict):
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True, http="h11")
+    uvicorn.run("main:app", host="127.0.0.1", port=8000, reload=True, http="h11")

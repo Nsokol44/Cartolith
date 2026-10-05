@@ -317,6 +317,7 @@ def test_upload_endpoint_gpkg_choice_flow():
     POLY.to_file(path, layer="zones")
     content = open(path, "rb").read()
     client = TestClient(main.app)
+    client.headers["X-Cartolith-Token"] = main.API_TOKEN  # writes require the session token
     r = client.post("/api/datasets/upload",
                     files={"file": ("two.gpkg", content,
                                     "application/octet-stream")})
@@ -334,6 +335,7 @@ def test_upload_endpoint_wkt_csv_becomes_spatial():
     from fastapi.testclient import TestClient
     import main
     client = TestClient(main.app)
+    client.headers["X-Cartolith-Token"] = main.API_TOKEN  # writes require the session token
     csv_bytes = b"name,wkt\nA,POINT (0 0)\nB,POINT (1 1)\n"
     r = client.post("/api/datasets/upload",
                     files={"file": ("pts.csv", csv_bytes, "text/csv")})

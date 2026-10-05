@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from "react"
-import { netcdfApi, frameApi, getBase } from "../api"
+import { netcdfApi, frameApi, getBase, apiFetch } from "../api"
 import { fireLessonEvent } from "../lesson-events"
 
 const COLORMAPS = ["viridis","plasma","inferno","magma","turbo","rdylgn","spectral","blues","reds","coolwarm","gray","terrain"]
@@ -69,7 +69,7 @@ export default function NetCDFExplorer({ datasetId, netcdfMeta, rasterMeta, onBa
         const res = await fetch(`${getBase()}/api/raster/${encodeURIComponent(datasetId)}/band_slice?band=${b}&colormap=${cm}`)
         if (res.ok) { const d = await res.json(); setFrameStats(d.stats) }
       } else {
-        const res = await fetch(`${getBase()}/api/netcdf/${encodeURIComponent(datasetId)}/slice`, {
+        const res = await apiFetch(`${getBase()}/api/netcdf/${encodeURIComponent(datasetId)}/slice`, {
           method: "POST", headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ variable: v, time_index: t, level_index: l, colormap: cm })
         })
@@ -169,7 +169,7 @@ export default function NetCDFExplorer({ datasetId, netcdfMeta, rasterMeta, onBa
         level_index: levelIdx,
       }
       setExportPct(10)
-      const resp = await fetch(`${getBase()}/api/animation/export`, {
+      const resp = await apiFetch(`${getBase()}/api/animation/export`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),

@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { useApp } from '../store'
-import { api, cartoApi, getBase } from '../api'
+import { api, cartoApi, getBase, apiFetch } from '../api'
 import { fireLessonEvent } from '../lesson-events'
 
 // ── Leaflet loaded via CDN script tag injected once ──────────────────────────
@@ -487,7 +487,7 @@ export default function CartographyTab() {
     try {
       // If this is a NetCDF dataset, push the correct time band first
       if (ds?.netcdf_meta && timeIdx > 0) {
-        await fetch(`${getBase()}/api/netcdf/${encodeURIComponent(form.dataset_id)}/load_time_band`, {
+        await apiFetch(`${getBase()}/api/netcdf/${encodeURIComponent(form.dataset_id)}/load_time_band`, {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ time_index: timeIdx, level_index: 0 })
         })
@@ -688,7 +688,7 @@ export default function CartographyTab() {
                       setLayers(ls => ls.map(l => l.id === layer.id ? { ...l, currentTimeIdx: t } : l))
                       // Push to backend and re-fetch layer data
                       try {
-                        await fetch(`${getBase()}/api/netcdf/${encodeURIComponent(layer.config.dataset_id)}/load_time_band`, {
+                        await apiFetch(`${getBase()}/api/netcdf/${encodeURIComponent(layer.config.dataset_id)}/load_time_band`, {
                           method: 'POST', headers: { 'Content-Type': 'application/json' },
                           body: JSON.stringify({ time_index: t, level_index: 0 })
                         })

@@ -86,6 +86,7 @@ def test_attribute_stat_check():
 def test_exercise_endpoints_via_testclient():
     from fastapi.testclient import TestClient
     client = TestClient(main.app)
+    client.headers["X-Cartolith-Token"] = main.API_TOKEN  # writes require the session token
     r = client.get("/api/exercises")
     assert r.status_code == 200 and len(r.json()["exercises"]) == 2
     r = client.post("/api/exercises/morans-i-gradient/check",

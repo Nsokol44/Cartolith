@@ -143,6 +143,35 @@ no digitizing/editing yet. `WHATS_NEW.md` tracks feature history in
 detail; `ENHANCEMENT_PLAN.md` is a candid audit of correctness,
 pedagogy, and what to build next.
 
+## Security: local-only by design
+
+Cartolith's backend runs **on the student's own machine** and includes a
+Python notebook that executes code — that's the point of the tool, and it
+means the backend must never take orders from anyone else. Three guards
+enforce that:
+
+- **Loopback only.** Every launcher (the Tauri sidecar, the fallback
+  launcher, `start.sh`, and `python main.py`) binds `127.0.0.1`. The
+  backend is not reachable from the LAN or the internet.
+- **CORS allowlist.** The API only answers cross-origin requests from the
+  legitimate local frontends: the Tauri webview (`tauri://localhost`,
+  `https://tauri.localhost`) and local dev/same-origin pages
+  (`http://localhost:<port>`, `http://127.0.0.1:<port>`). A website a
+  student happens to visit cannot read API responses.
+- **Per-launch session token.** Every non-GET `/api` request must carry an
+  `X-Cartolith-Token` header. The token is generated fresh at each
+  backend launch (or taken from the `CARTOLITH_API_TOKEN` environment
+  variable when set), written to `backend/.session_token` (gitignored,
+  owner-only permissions), and fetched by the frontend from
+  `GET /api/session-token` — which itself only answers allowlisted local
+  origins. Read-only GETs (health checks, map/animation frames loaded as
+  images) need no token; everything that changes state or runs code does.
+
+So even with the app open, a malicious web page in another tab cannot run
+notebook code, upload data, or call any other state-changing endpoint: it
+cannot read the token, and the browser will not let it set the header
+without a CORS preflight its origin fails.
+
 ## Running from source as a last resort (students)
 
 Only for a specific stuck machine — it trades installer friction for

@@ -25,6 +25,41 @@ export function getBase() { return BASE }
 
 const isTauri = () => typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window
 
+// ── Local session token ─────────────────────────────────────────────────────
+// The backend is local-only (127.0.0.1) and requires a per-launch token on
+// every non-GET /api request (see "Local-only security" in backend/main.py),
+// so a random website in the student's browser cannot drive it — most
+// importantly it cannot reach the notebook's arbitrary-code endpoint. The
+// token is fetched once from /api/session-token, which only answers local
+// origins (Tauri webview, Vite dev server, same-origin fallback launcher).
+let _sessionToken = null
+let _sessionTokenPromise = null
+
+export async function ensureToken() {
+  if (_sessionToken) return _sessionToken
+  if (!_sessionTokenPromise) {
+    _sessionTokenPromise = (async () => {
+      const res = await fetch(`${BASE}/api/session-token`)
+      if (!res.ok) throw new Error(`Could not obtain the local session token (${res.status}).`)
+      const d = await res.json()
+      _sessionToken = d.token
+      return _sessionToken
+    })()
+  }
+  return _sessionTokenPromise
+}
+
+export function tokenHeaders(headers = {}) {
+  return _sessionToken ? { ...headers, 'X-Cartolith-Token': _sessionToken } : headers
+}
+
+/** fetch() wrapper for direct API calls outside request(): attaches the
+ *  session token (fetching it first if needed). Use for every non-GET call. */
+export async function apiFetch(url, options = {}) {
+  await ensureToken()
+  return fetch(url, { ...options, headers: tokenHeaders(options.headers || {}) })
+}
+
 /**
  * Resolve which backend this app should talk to. Must be awaited before
  * the very first API call. Safe to call in non-Tauri contexts (no-op).
@@ -58,6 +93,10 @@ export async function initBackend({ onStatus } = {}) {
 async function request(path, options = {}) {
   let res
   try {
+    if (options.method && options.method.toUpperCase() !== 'GET') {
+      await ensureToken()
+      options = { ...options, headers: tokenHeaders(options.headers || {}) }
+    }
     res = await fetch(BASE + path, options)
   } catch (networkErr) {
     throw new Error(
@@ -387,7 +426,7 @@ export const notebookApi = {
   // Export streams a file back, so this bypasses request() (which parses JSON)
   // and triggers a browser download directly.
   download: async (cells, format, name) => {
-    const res = await fetch(`${getBase()}/api/notebook/export`, {
+    const res = await apiFetch(`${getBase()}/api/notebook/export`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ cells, format, name }),
     })

@@ -44,3 +44,6 @@ outputs/
 
 # Python envs outside backend/
 .venv/
+
+# Per-launch API session token (backend/main.py) — never commit
+backend/.session_token
