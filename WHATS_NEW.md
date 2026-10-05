@@ -1,5 +1,18 @@
 # Cartolith — What's New
 
+## v1.5.1 (October 2026)
+
+- **Security hardening:** the backend now binds to 127.0.0.1 only, CORS is
+  restricted to the app itself and local origins, and every state-changing
+  API request requires a per-launch session token (the frontend fetches it
+  automatically). This closes a hole where any website open in the same
+  browser could have driven the local backend (notebook execution, SQL
+  Lab, file uploads). See "Security: local-only by design" in the README.
+- **CI fix:** the backend test workflow now installs the real dependency
+  manifests (`backend/requirements.txt` + `requirements-dev.txt`); the
+  suite is 82 passing, 1 expected failure (the documented LISA inference
+  divergence).
+
 ## v1.5.0 (October 2026)
 
 - **Opens almost anything:** GeoPackage (with layer choice), KML/KMZ, GPX,

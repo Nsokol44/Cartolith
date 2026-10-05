@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Cartolith 1.5.0 — setup and launch
+# Cartolith 1.5.1 — setup and launch
 # NOTE: intentionally NO "set -e" — we handle errors manually
 
 BACKEND_PORT=8000
@@ -7,7 +7,7 @@ FRONTEND_PORT=5173
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 echo ""
-echo "◈  Cartolith 1.5.0"
+echo "◈  Cartolith 1.5.1"
 echo "──────────────────────────────────"
 
 # ── Free ports if occupied ─────────────────────────────────────────────────
