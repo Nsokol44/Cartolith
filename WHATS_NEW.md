@@ -1,5 +1,24 @@
 # Cartolith — What's New
 
+## v1.5.2 (October 2026)
+
+- **Data loading fixed end-to-end:** the desktop upload path now sends the
+  per-launch session token — v1.5.1's security middleware was rejecting every
+  file upload while the rest of the app worked. If a dataset would not open
+  in v1.5.1, this is the fix.
+- **Zips read properly:** zipped shapefiles match their parts
+  case-insensitively, tolerate nested folders and extra files, assume WGS84
+  with a clear warning when the .prj is missing, and tell you when a zip
+  holds more than one shapefile. Loose shapefile parts selected together
+  are bundled automatically.
+- **Tables are robust:** comma, semicolon, tab, and pipe delimited files;
+  UTF-8/BOM or Windows-1252 encodings; plain JSON record arrays — all load,
+  with latitude/longitude detected under many more column names.
+- **GRIB and KML hardened:** GRIB grids in the 0–360 longitude convention
+  wrap correctly, a built-in KML/KMZ parser covers builds where GDAL's KML
+  driver is absent, and legacy .xls workbooks load too.
+- The suite is 97 passing, 1 expected failure.
+
 ## v1.5.1 (October 2026)
 
 - **Security hardening:** the backend now binds to 127.0.0.1 only, CORS is
