@@ -289,7 +289,7 @@ def _decode_time_labels(ds, time_c):
 
 # ── Parsers ─────────────────────────────────────────────────────────────────
 
-def _gdf_to_result(gdf, fname):
+def _gdf_to_result(gdf, fname, note=None):
     geom_type = "Unknown"
     try: geom_type = gdf.geometry.geom_type.value_counts().idxmax()
     except: pass
@@ -311,11 +311,43 @@ def _gdf_to_result(gdf, fname):
     datasets[fname] = df
     try: vector_cache[fname] = gdf   # keep full geometry for the Geoprocess toolbox
     except: pass
-    return {"id": fname, "name": fname, "format": "shapefile",
+    res = {"id": fname, "name": fname, "format": "shapefile",
             "shape": list(df.shape), "columns": list(df.columns),
             "types": infer_types(df), "preview": df_to_json(df),
             "missing": {c: int(df[c].isna().sum()) for c in df.columns},
             "geo_meta": {"geometry_type": geom_type, "crs": crs_str, "bounds": bounds, "feature_count": len(gdf)}}
+    if note: res["geometry_note"] = note
+    return res
+
+def _find_ci(root, *suffixes):
+    """Files under root whose suffix matches, case-insensitively (real-world
+    zips routinely carry .SHP / .GeoJSON / .TIF), shallowest path first,
+    then alphabetical — so 'the first' match is deterministic."""
+    hits = [p for p in Path(root).rglob("*")
+            if p.is_file() and p.suffix.lower() in suffixes]
+    return sorted(hits, key=lambda p: (len(p.parts), str(p).lower()))
+
+def _read_shp_file(shp_path):
+    """Read one extracted shapefile; returns (gdf, note).
+
+    A missing .shx index is rebuilt by GDAL (SHAPE_RESTORE_SHX); a missing
+    .prj means WGS84 is assumed and the note says so, loudly, because the
+    coordinates might really be something else."""
+    os.environ.setdefault("SHAPE_RESTORE_SHX", "YES")
+    try:
+        gdf = gpd.read_file(str(shp_path))
+    except Exception:
+        import fiona
+        with fiona.Env(SHAPE_RESTORE_SHX="YES"):
+            gdf = gpd.read_file(str(shp_path))
+    note = None
+    if gdf.crs is None:
+        gdf = gdf.set_crs("EPSG:4326")
+        note = ("No .prj projection file was included with this shapefile, "
+                "so the coordinates were assumed to be WGS84 (EPSG:4326). "
+                "If the layer lands in the wrong place, the data probably "
+                "uses a different CRS — re-export it with a .prj file.")
+    return gdf, note
 
 def parse_zip_upload(content, fname):
     """
@@ -328,54 +360,69 @@ def parse_zip_upload(content, fname):
         with open(zpath, "wb") as f: f.write(content)
         with zipfile.ZipFile(zpath) as z: z.extractall(tmpdir)
 
-        if list(Path(tmpdir).rglob("*.shp")):
-            return parse_shapefile_upload(content, fname)
+        shps = _find_ci(tmpdir, ".shp")
+        if shps:
+            gdf, note = _read_shp_file(shps[0])
+            res = _gdf_to_result(gdf, fname, note=note)
+            if len(shps) > 1:
+                names = ", ".join(p.name for p in shps)
+                res["zip_note"] = (f"This zip held {len(shps)} shapefiles "
+                                   f"({names}); loaded '{shps[0].name}'. "
+                                   "To use another one, zip and load it "
+                                   "separately.")
+            return res
 
-        for pattern, handler_ext in [
-            ("*.nc", "nc"), ("*.nc4", "nc4"), ("*.cdf", "cdf"),
-            ("*.tif", "tif"), ("*.tiff", "tiff"),
-            ("*.las", "las"), ("*.laz", "laz"),
+        for suffixes, handler_ext in [
+            ((".nc", ".nc4", ".cdf"), "nc"),
+            ((".tif", ".tiff"), "tif"),
+            ((".las", ".laz"), "las"),
         ]:
-            hits = list(Path(tmpdir).rglob(pattern))
+            hits = _find_ci(tmpdir, *suffixes)
             if not hits: continue
             inner = hits[0]
             inner_name = f"{fname}::{inner.name}"
             inner_content = inner.read_bytes()
-            if handler_ext in ("nc", "nc4", "cdf"):
+            if handler_ext == "nc":
                 return parse_netcdf(inner_content, inner_name)
-            if handler_ext in ("tif", "tiff"):
+            if handler_ext == "tif":
                 if HAS_RASTERIO:
                     try: return parse_raster(inner_content, inner_name, handler_ext)
                     except Exception: pass
                 return parse_image(inner_content, inner_name, handler_ext)
-            if handler_ext in ("las", "laz"):
+            if handler_ext == "las":
                 return parse_lidar(inner_content, inner_name, handler_ext)
 
-        for pattern in ("*.geojson", "*.gpkg", "*.kml", "*.gml", "*.fgb",
-                        "*.topojson", "*.json"):
-            hits = list(Path(tmpdir).rglob(pattern))
+        for suffix in (".geojson", ".gpkg", ".kml", ".kmz", ".gml", ".fgb",
+                       ".topojson", ".json", ".gpx"):
+            hits = _find_ci(tmpdir, suffix)
             if not hits: continue
             inner = hits[0]
             try:
                 import data_loading as _dl
                 gdf, _meta = _dl.read_vector(inner.read_bytes(), inner.name)
-                return _gdf_to_result(gdf, f"{fname}::{inner.name}")
+                res = _gdf_to_result(gdf, f"{fname}::{inner.name}")
+                res["load_meta"] = _meta
+                return res
+            except _dl.NeedsChoice:
+                raise
             except Exception:
                 continue
-        for pattern in ("*.grib2", "*.grb2", "*.grib"):
-            hits = list(Path(tmpdir).rglob(pattern))
-            if hits:
-                inner = hits[0]
-                return parse_grib_upload(inner.read_bytes(), f"{fname}::{inner.name}")
-        csvs = list(Path(tmpdir).rglob("*.csv"))
+        grib = _find_ci(tmpdir, ".grib2", ".grb2", ".grib", ".grb")
+        if grib:
+            inner = grib[0]
+            return parse_grib_upload(inner.read_bytes(), f"{fname}::{inner.name}")
+        csvs = _find_ci(tmpdir, ".csv", ".tsv", ".txt")
         if csvs:
             inner = csvs[0]
-            return parse_tabular(inner.read_bytes(), f"{fname}::{inner.name}", "csv")
+            ext = inner.suffix.lower().lstrip(".")
+            return parse_tabular(inner.read_bytes(), f"{fname}::{inner.name}", ext)
 
         raise ValueError(
             "No recognized file found in zip (looked for .shp, GeoJSON, "
-            ".gpkg, .kml, .gml, .fgb, .nc/.nc4/.cdf, .tif/.tiff, .las/.laz, "
-            ".grib2, .csv)")
+            ".gpkg, .kml, .gml, .fgb, .gpx, .nc/.nc4/.cdf, .tif/.tiff, "
+            ".las/.laz, .grib2, .csv — file extensions are matched "
+            "case-insensitively, so the contents may be a format Cartolith "
+            "does not read, or the zip may be empty/corrupt)")
 
 def parse_shapefile_upload(content, fname):
     if not HAS_GEOPANDAS: raise ValueError("geopandas not installed")
@@ -384,20 +431,28 @@ def parse_shapefile_upload(content, fname):
             zpath = os.path.join(tmpdir, "upload.zip")
             with open(zpath, "wb") as f: f.write(content)
             with zipfile.ZipFile(zpath) as z: z.extractall(tmpdir)
-            shps = list(Path(tmpdir).rglob("*.shp"))
+            shps = _find_ci(tmpdir, ".shp")
             if not shps: raise ValueError("No .shp found in zip")
-            gdf = gpd.read_file(str(shps[0]))
-        return _gdf_to_result(gdf, fname)
+            gdf, note = _read_shp_file(shps[0])
+            res = _gdf_to_result(gdf, fname, note=note)
+            if len(shps) > 1:
+                names = ", ".join(p.name for p in shps)
+                res["zip_note"] = (f"This zip held {len(shps)} shapefiles "
+                                   f"({names}); loaded '{shps[0].name}'. "
+                                   "To use another one, zip and load it "
+                                   "separately.")
+            return res
     else:
         with tempfile.TemporaryDirectory() as tmpdir:
             shp_path = os.path.join(tmpdir, "data.shp")
             with open(shp_path, "wb") as f: f.write(content)
-            os.environ.setdefault("SHAPE_RESTORE_SHX", "YES")
-            try: gdf = gpd.read_file(shp_path)
-            except:
-                import fiona
-                with fiona.Env(SHAPE_RESTORE_SHX="YES"): gdf = gpd.read_file(shp_path)
-            return _gdf_to_result(gdf, fname)
+            gdf, note = _read_shp_file(shp_path)
+            extra = ("This was a bare .shp on its own, so there is no "
+                     "attribute table — for attributes, load the shapefile "
+                     "as a zipped bundle (.shp + .shx + .dbf in one .zip), "
+                     "or select all the parts together in the file picker.")
+            note = f"{note} {extra}" if note else extra
+            return _gdf_to_result(gdf, fname, note=note)
 
 def _parse_dbf_manual(content):
     if len(content) < 32: raise ValueError("DBF too small")
@@ -692,10 +747,25 @@ def parse_image(content, fname, ext):
                 "thumbnail": thumb_b64,
                 "band_stats": {col: array_stats(df[col].values.reshape(h,w)) for col in df.columns}}}
 
+def _json_is_tabular(content):
+    """A .json file holding a bare array of records (or a plain object with
+    no GeoJSON structure) is a table, not a vector layer — GDAL rejects it
+    ('not recognized as being in a supported file format'), pandas eats it."""
+    try:
+        data = json.loads(content)
+    except Exception:
+        return False
+    if isinstance(data, list):
+        return True
+    if isinstance(data, dict):
+        return data.get("type") not in ("FeatureCollection", "Feature") \
+            and "features" not in data and "geometry" not in data
+    return False
+
+
 def parse_tabular(content, fname, ext):
-    if ext == "csv": df = pd.read_csv(io.BytesIO(content))
-    elif ext == "tsv": df = pd.read_csv(io.BytesIO(content), sep="\t")
-    elif ext in ("json","geojson"):
+    load_meta = None
+    if ext in ("json","geojson"):
         data = json.loads(content)
         if isinstance(data, dict) and data.get("type") == "FeatureCollection":
             if HAS_GEOPANDAS:
@@ -712,9 +782,16 @@ def parse_tabular(content, fname, ext):
                 df = pd.DataFrame(rows)
         elif isinstance(data, list): df = pd.DataFrame(data)
         else: df = pd.json_normalize(data)
-    elif ext in ("xlsx","xls"): df = pd.read_excel(io.BytesIO(content))
     elif ext == "parquet": df = pd.read_parquet(io.BytesIO(content))
-    else: raise ValueError(f"Unsupported format: .{ext}")
+    else:
+        # csv/tsv/txt/dat, Excel, and anything else text-like go through the
+        # robust reader in data_loading: encoding fallback chain
+        # (UTF-8 → CP1252/Latin-1), delimiter sniffing (comma / semicolon /
+        # tab / pipe), sheet choice for workbooks. Bare pd.read_csv used to
+        # die on CP1252 files and silently mangle semicolon CSVs into a
+        # single column.
+        import data_loading as _dl
+        df, load_meta = _dl.read_table(content, fname)
     for col in df.columns:
         if df[col].dtype == object and "date" in col.lower():
             try: df[col] = pd.to_datetime(df[col])
@@ -730,14 +807,17 @@ def parse_tabular(content, fname, ext):
                 if len(_gdf) and _gdf.geometry.notna().any():
                     _res = _gdf_to_result(_gdf, fname)
                     _res["geometry_note"] = _note
+                    if load_meta: _res["load_meta"] = load_meta
                     return _res
         except Exception:
             pass
     datasets[fname] = df
-    return {"id": fname, "name": fname, "format": ext,
+    res = {"id": fname, "name": fname, "format": ext,
             "shape": list(df.shape), "columns": list(df.columns),
             "types": infer_types(df), "preview": df_to_json(df),
             "missing": {c: int(df[c].isna().sum()) for c in df.columns}}
+    if load_meta: res["load_meta"] = load_meta
+    return res
 
 # ── Upload router ─────────────────────────────────────────────────────────────
 
@@ -774,6 +854,8 @@ async def upload_dataset(file: UploadFile = File(...), name: Optional[str] = Non
         if ext == "zip" or sniffed == "zip": return parse_zip_upload(content, fname)
         elif ext == "shp": return parse_shapefile_upload(content, fname)
         elif ext == "dbf": return parse_dbf(content, fname)
+        elif ext == "json" and _json_is_tabular(content):
+            return parse_tabular(content, fname, ext)
         elif sniffed in ("gpkg",) or ext in _dl.VECTOR_EXTS:
             gdf, meta = _dl.read_vector(content, fname, layer=layer)
             res = _gdf_to_result(gdf, fname)
@@ -838,9 +920,11 @@ def health():
                 "netcdf": HAS_NETCDF or HAS_XARRAY, "xarray": HAS_XARRAY,
                 "lidar": HAS_LASPY, "sklearn": HAS_SKLEARN, "pillow": HAS_PIL, "matplotlib": HAS_MPL,
                 "duckdb": HAS_DUCKDB},
-            "supported_formats": ["csv","tsv","json","geojson","xlsx","parquet",
-                "shp","dbf","zip","tif","tiff","geotiff","img","dem","hgt","asc",
-                "nc","nc4","cdf","las","laz","png","jpg","jpeg","bmp"]}
+            "supported_formats": ["csv","tsv","txt","json","geojson","xlsx","xls","parquet",
+                "shp","dbf","zip","gpkg","kml","kmz","gpx","gml","fgb","topojson",
+                "tif","tiff","geotiff","img","dem","hgt","asc",
+                "nc","nc4","cdf","grib","grib2","grb","grb2",
+                "las","laz","png","jpg","jpeg","bmp"]}
 
 @app.get("/api/datasets")
 def list_datasets():

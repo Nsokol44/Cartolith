@@ -95,6 +95,140 @@ def list_vector_layers(path: str) -> list:
         return []
 
 
+def _read_kml_fallback(content: bytes, ext: str):
+    """Dependency-free KML reader for the common Placemark geometries
+    (Point / LineString / Polygon / Multi*). Exists because GDAL builds
+    with the KML/LIBKML drivers disabled are common (the fiona wheel in
+    this project's own CI venv has neither) — Google Earth files are too
+    central to a geography classroom to hinge on a driver lottery.
+    Returns (gdf, meta) like read_vector."""
+    import xml.etree.ElementTree as ET
+    import geopandas as gpd
+    from shapely.geometry import (Point, LineString, Polygon, MultiPoint,
+                                  MultiLineString, MultiPolygon)
+    if ext == "kmz":
+        import zipfile
+        try:
+            with zipfile.ZipFile(io.BytesIO(content)) as z:
+                names = [n for n in z.namelist() if n.lower().endswith(".kml")]
+                if not names:
+                    raise ParseFailure("This .kmz holds no .kml document inside it.")
+                xml = z.read(names[0])
+        except ParseFailure:
+            raise
+        except Exception as e:
+            raise ParseFailure(friendly_error("kmz", e)) from e
+    else:
+        xml = content
+    try:
+        root = ET.fromstring(xml)
+    except Exception as e:
+        raise ParseFailure(f"Couldn't parse this KML as XML: {e}") from e
+
+    def tag(el):
+        return el.tag.rsplit("}", 1)[-1]
+
+    def children(el, name):
+        return [c for c in el if tag(c) == name]
+
+    def child(el, name):
+        for c in el:
+            if tag(c) == name:
+                return c
+        return None
+
+    def parse_coords(text):
+        pts = []
+        for tok in (text or "").split():
+            parts = tok.split(",")
+            try:
+                pts.append((float(parts[0]), float(parts[1])))
+            except Exception:
+                continue
+        return pts
+
+    def ring(el):
+        lr = child(el, "LinearRing")
+        if lr is None:
+            return []
+        co = child(lr, "coordinates")
+        return parse_coords(co.text if co is not None else "")
+
+    def geom_of(el):
+        t = tag(el)
+        if t == "Point":
+            co = child(el, "coordinates")
+            pts = parse_coords(co.text if co is not None else "")
+            return Point(pts[0]) if pts else None
+        if t == "LineString":
+            co = child(el, "coordinates")
+            pts = parse_coords(co.text if co is not None else "")
+            return LineString(pts) if len(pts) >= 2 else None
+        if t == "Polygon":
+            outer_el = child(el, "outerBoundaryIs")
+            shell = ring(outer_el) if outer_el is not None else []
+            if len(shell) < 4:
+                return None
+            holes = [ring(h) for h in children(el, "innerBoundaryIs")]
+            holes = [h for h in holes if len(h) >= 4]
+            return Polygon(shell, holes)
+        if t in ("MultiGeometry", "MultiTrack", "MultiGeometryCollection"):
+            parts = [g for g in (geom_of(c) for c in el) if g is not None]
+            if not parts:
+                return None
+            kinds = {g.geom_type for g in parts}
+            if kinds == {"Point"}:
+                return MultiPoint(parts)
+            if kinds <= {"LineString", "MultiLineString"}:
+                lines = []
+                for g in parts:
+                    lines.extend(list(g.geoms) if g.geom_type == "MultiLineString" else [g])
+                return MultiLineString(lines)
+            if kinds <= {"Polygon", "MultiPolygon"}:
+                polys = []
+                for g in parts:
+                    polys.extend(list(g.geoms) if g.geom_type == "MultiPolygon" else [g])
+                return MultiPolygon(polys)
+            from shapely.geometry import GeometryCollection
+            return GeometryCollection(parts)
+        return None
+
+    rows = []
+    for el in root.iter():
+        if tag(el) != "Placemark":
+            continue
+        geom = None
+        for c in el:
+            geom = geom_of(c)
+            if geom is not None:
+                break
+        if geom is None:
+            continue
+        name_el = child(el, "name")
+        desc_el = child(el, "description")
+        row = {"name": name_el.text.strip() if name_el is not None and name_el.text else "",
+               "description": desc_el.text.strip() if desc_el is not None and desc_el.text else ""}
+        ext_el = child(el, "ExtendedData")
+        if ext_el is not None:
+            for d in ext_el.iter():
+                if tag(d) == "Data" and d.get("name"):
+                    v = child(d, "value")
+                    row[d.get("name")] = v.text if v is not None else None
+        row["geometry"] = geom
+        rows.append(row)
+    if not rows:
+        raise ParseFailure(
+            "No Placemark geometries (Point / LineString / Polygon) were "
+            "found in this KML. Ground overlays and network links are not "
+            "vector layers — export the placemarks from Google Earth and "
+            "try again.")
+    gdf = gpd.GeoDataFrame(rows, geometry="geometry", crs="EPSG:4326")
+    meta = {"format": ext, "layers": [], "crs_assumed_wgs84": False,
+            "geometry_type": str(gdf.geometry.geom_type.value_counts().idxmax()),
+            "reader": "builtin-kml-fallback"}
+    return gdf, meta
+
+
 def read_vector(content: bytes, filename: str, layer: Optional[str] = None):
     """Parse any GDAL-readable vector file. Returns (gdf, meta).
 
@@ -112,6 +246,13 @@ def read_vector(content: bytes, filename: str, layer: Optional[str] = None):
     except NeedsChoice:
         raise
     except Exception as e:
+        if ext in ("kml", "kmz"):
+            try:
+                return _read_kml_fallback(content, ext)
+            except ParseFailure:
+                raise
+            except Exception:
+                pass
         raise ParseFailure(friendly_error(ext, e)) from e
     finally:
         Path(path).unlink(missing_ok=True)
@@ -250,9 +391,14 @@ def detect_geometry(df) -> Optional[Dict[str, Any]]:
         la = pd.to_numeric(df[lat], errors="coerce")
         lo = pd.to_numeric(df[lon], errors="coerce")
         ok = la.notna() & lo.notna()
-        if ok.mean() > 0.8 and la[ok].between(-90, 90).mean() > 0.95 \
-                and lo[ok].between(-180, 180).mean() > 0.95:
-            return {"kind": "latlon", "lat": lat, "lon": lon}
+        if ok.mean() > 0.8 and la[ok].between(-90, 90).mean() > 0.95:
+            if lo[ok].between(-180, 180).mean() > 0.95:
+                return {"kind": "latlon", "lat": lat, "lon": lon}
+            # Global weather grids (GRIB/NetCDF straight from cfgrib/xarray)
+            # conventionally use 0..360 longitudes — accept and wrap.
+            if lo[ok].between(0, 360).mean() > 0.95:
+                return {"kind": "latlon", "lat": lat, "lon": lon,
+                        "wrap_lon": True}
     return None
 
 
@@ -261,13 +407,22 @@ def apply_geometry(df, det: Dict[str, Any]):
     Returns (gdf, assumption_note)."""
     import geopandas as gpd
     if det["kind"] == "latlon":
+        import pandas as pd
         sub = df.dropna(subset=[det["lat"], det["lon"]]).copy()
+        lonv = pd.to_numeric(sub[det["lon"]], errors="coerce")
+        latv = pd.to_numeric(sub[det["lat"]], errors="coerce")
+        wrapped = ""
+        if det.get("wrap_lon"):
+            lonv = lonv.where(lonv <= 180, lonv - 360)
+            sub[det["lon"]] = lonv
+            wrapped = (" Longitudes arrived in the 0–360 convention and "
+                       "were wrapped to −180…180.")
         gdf = gpd.GeoDataFrame(
-            sub, geometry=gpd.points_from_xy(sub[det["lon"]], sub[det["lat"]]),
+            sub, geometry=gpd.points_from_xy(lonv, latv),
             crs="EPSG:4326")
         return gdf, (f"Made points from '{det['lon']}' / '{det['lat']}' and assumed "
                      "WGS84 (EPSG:4326). If your coordinates use another CRS, "
-                     "reproject before measuring distances.")
+                     "reproject before measuring distances." + wrapped)
     if det["kind"] == "wkt":
         from shapely import wkt as shapely_wkt
         geoms = df[det["column"]].apply(

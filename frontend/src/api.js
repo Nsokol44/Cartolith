@@ -184,7 +184,18 @@ export function uploadWithProgress(file, name, onProgress) {
     })
 
     xhr.timeout = 0   // no timeout — large files can take time
-    xhr.send(fd)
+
+    // The backend requires the per-launch session token on every non-GET
+    // /api request (v1.5.1 localhost security) and rejects the rest with
+    // 401. This XHR path never attached it — request()/apiFetch do, this
+    // one didn't — so EVERY file upload failed in the shipped app while
+    // the rest of the API worked. Fetch the token first, then send.
+    ensureToken()
+      .then((tok) => {
+        if (tok) xhr.setRequestHeader('X-Cartolith-Token', tok)
+        xhr.send(fd)
+      })
+      .catch(reject)
   })
 }
 

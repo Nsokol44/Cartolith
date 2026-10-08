@@ -82,8 +82,39 @@ export default function Sidebar() {
     }catch(err){ alert(`Re-run failed:\n${err.message?.split("\n")[0]}`) }
   }
 
+  const SHP_PART_EXTS=new Set(["shp","shx","dbf","prj","cpg","qix","sbn","sbx","shp.xml"])
+
   async function handleFiles(e){
-    const files=Array.from(e.target.files)
+    const picked=Array.from(e.target.files)
+    // A shapefile is a set of parts (.shp + .shx + .dbf + …) that only
+    // makes sense together, but the upload endpoint takes one file per
+    // request — parts sent one-by-one arrive as unrelated fragments (a
+    // bare .shp has no attributes). Bundle each shapefile's parts into a
+    // single .zip client-side and upload that; the backend's zip path
+    // reassembles them.
+    const groups=new Map(); const singles=[]
+    for(const f of picked){
+      const lower=f.name.toLowerCase()
+      const dot=f.name.lastIndexOf(".")
+      const ext=dot>=0?f.name.slice(dot+1).toLowerCase():""
+      const base=lower.endsWith(".shp.xml")?lower.slice(0,-8)
+        :(dot>=0?lower.slice(0,dot):lower)
+      if(SHP_PART_EXTS.has(ext)||lower.endsWith(".shp.xml")){
+        if(!groups.has(base))groups.set(base,[])
+        groups.get(base).push(f)
+      } else singles.push(f)
+    }
+    const files=[...singles]
+    for(const [base,parts] of groups){
+      const hasShp=parts.some(f=>f.name.toLowerCase().endsWith(".shp"))
+      if(hasShp&&parts.length>1){
+        try{
+          const {zipStore}=await import("../zipstore")
+          const blob=await zipStore(parts.map(f=>({name:f.name,blob:f})))
+          files.push(new File([blob],`${base}.zip`,{type:"application/zip"}))
+        }catch{ files.push(...parts) }
+      } else files.push(...parts)
+    }
     for(const file of files){
       setUploading(u=>({...u,[file.name]:0}))
       try{
@@ -139,12 +170,12 @@ export default function Sidebar() {
         {projMsg&&<div style={{fontSize:10,color:"var(--accent2)",marginBottom:8,lineHeight:1.4}}>{projMsg}</div>}
         {showPipeline&&<Pipeline open={showPipeline} onClose={()=>setShowPipeline(false)}/>}
         <input ref={fileRef} type="file" multiple style={{display:"none"}}
-          accept=".csv,.tsv,.json,.geojson,.xlsx,.parquet,.shp,.dbf,.zip,.tif,.tiff,.geotiff,.img,.dem,.hgt,.asc,.nc,.nc4,.cdf,.las,.laz,.png,.jpg,.jpeg,.bmp"
+          accept=".csv,.tsv,.json,.geojson,.xlsx,.xls,.parquet,.shp,.dbf,.zip,.tif,.tiff,.geotiff,.img,.dem,.hgt,.asc,.nc,.nc4,.cdf,.las,.laz,.png,.jpg,.jpeg,.bmp,.kml,.kmz,.gpkg,.gpx,.gml,.fgb,.topojson,.grib,.grib2,.grb,.grb2,.jsonl,.geojsons"
           onChange={handleFiles}/>
         {datasets.length===0?(
           <div style={{padding:"14px 0",textAlign:"center"}}>
             <div style={{fontSize:22,opacity:0.25,marginBottom:8}}>◈</div>
-            <div style={{fontSize:11,color:"var(--txt3)",lineHeight:1.7}}>CSV · TSV · JSON · GeoJSON<br/>SHP · DBF · ZIP<br/>TIF · GeoTIFF · DEM · HGT<br/>NetCDF · NC4<br/>LAS · LAZ (LiDAR)<br/>PNG · JPG</div>
+            <div style={{fontSize:11,color:"var(--txt3)",lineHeight:1.7}}>CSV · TSV · JSON · GeoJSON<br/>SHP · DBF · ZIP (shapefiles)<br/>KML · KMZ · GeoPackage · GPX<br/>TIF · GeoTIFF · DEM · HGT<br/>NetCDF · GRIB2<br/>LAS · LAZ (LiDAR)<br/>PNG · JPG</div>
             <button className="btn sm" style={{marginTop:10,width:"100%"}} onClick={()=>fileRef.current.click()}>Browse files</button>
             <button className="btn sm primary" style={{marginTop:6,width:"100%"}} disabled={sample.loading} onClick={()=>sample.load("both")}>{sample.loading?"Loading…":"✦ Try sample data"}</button>
             {sample.err&&<div style={{fontSize:10,color:"var(--accent4)",marginTop:6,lineHeight:1.5}}>{sample.err}</div>}
