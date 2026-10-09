@@ -816,6 +816,13 @@ def parse_tabular(content, fname, ext):
             "shape": list(df.shape), "columns": list(df.columns),
             "types": infer_types(df), "preview": df_to_json(df),
             "missing": {c: int(df[c].isna().sum()) for c in df.columns}}
+    # Say plainly that this is a table, not a map layer — a student whose
+    # file "loaded but isn't on the map" deserves the reason, not silence.
+    res["geometry_note"] = ("No coordinate columns were found, so this "
+            "loaded as a data table rather than a map layer. If the data "
+            "has locations, latitude/longitude columns (named lat/lon, "
+            "latitude/longitude, x/y, …) or a WKT geometry column are "
+            "picked up automatically.")
     if load_meta: res["load_meta"] = load_meta
     return res
 
@@ -841,12 +848,15 @@ def parse_grib_upload(content, fname):
             "grib_meta": meta}
 
 
-@app.post("/api/datasets/upload")
-async def upload_dataset(file: UploadFile = File(...), name: Optional[str] = None,
-                         layer: Optional[str] = None, sheet: Optional[str] = None,
-                         table: Optional[str] = None):
-    content = await file.read()
-    fname = name or file.filename or "upload"
+def _ingest_bytes(content: bytes, fname: str, layer: Optional[str] = None,
+                  sheet: Optional[str] = None, table: Optional[str] = None):
+    """The one ingest pipeline. Every byte stream that becomes a dataset —
+    a multipart upload, a file dropped on the window (read from disk by
+    /api/datasets/upload-paths) — goes through here, so all entry points
+    share identical format behaviour, choice handling, and errors.
+    Returns the dataset dict, or the needs_choice dict (NOT an error:
+    the file holds several layers/sheets/tables and the UI should ask).
+    Raises HTTPException(400) with a student-readable detail on failure."""
     ext = fname.rsplit(".", 1)[-1].lower() if "." in fname else "csv"
     import data_loading as _dl
     sniffed = _dl.sniff_format(content, fname)
@@ -910,6 +920,142 @@ async def upload_dataset(file: UploadFile = File(...), name: Optional[str] = Non
         raise HTTPException(status_code=400,
                             detail=_dl.friendly_error(sniffed or ext, e))
 
+
+@app.post("/api/datasets/upload")
+async def upload_dataset(file: UploadFile = File(...), name: Optional[str] = None,
+                         layer: Optional[str] = None, sheet: Optional[str] = None,
+                         table: Optional[str] = None):
+    content = await file.read()
+    fname = name or file.filename or "upload"
+    return _ingest_bytes(content, fname, layer=layer, sheet=sheet, table=table)
+
+
+# ── Dropped-file ingest (drag & drop onto the window) ─────────────────────
+#
+# Tauri's native drag-drop handler delivers file PATHS, not browser File
+# objects, so the multipart upload above cannot consume a drop. This
+# endpoint takes the dropped paths, reads the files from local disk, and
+# runs them through the exact same _ingest_bytes pipeline. It is a
+# non-GET /api route, so the session-token middleware gates it exactly
+# like the multipart upload (401 without the token). Reading a path the
+# user themselves just dropped is inside the established trust model:
+# token holders can already run arbitrary Python via the notebook.
+
+class _DropIngestRequest(BaseModel):
+    paths: List[str]
+    layer: Optional[str] = None
+    sheet: Optional[str] = None
+    table: Optional[str] = None
+
+
+class _DropError(Exception):
+    """A drop problem whose message is already student-readable."""
+
+
+_DROP_PART_EXTS = {"shp", "shx", "dbf", "prj", "cpg", "qix", "sbn", "sbx",
+                   "shp.xml"}
+
+
+def _drop_units(paths):
+    """Group dropped paths into ingest units, preserving drop order.
+    Shapefile parts dropped together (same folder, same stem) form one
+    unit — a shapefile only makes sense whole. Everything else, and a
+    lone shapefile part, is its own unit. Returns a list of dicts:
+    {label, paths: [Path], bundle_as: Optional[str]}."""
+    groups: Dict[Any, List[Path]] = {}
+    order: List[Any] = []
+    for raw in paths:
+        p = Path(str(raw)).expanduser()
+        lower = p.name.lower()
+        if lower.endswith(".shp.xml"):
+            ext, stem = "shp.xml", lower[:-8]
+        elif "." in lower:
+            ext, stem = lower.rsplit(".", 1)[-1], lower.rsplit(".", 1)[0]
+        else:
+            ext, stem = "", lower
+        if ext in _DROP_PART_EXTS:
+            key = ("shp", str(p.parent), stem)
+        else:
+            key = ("file", str(p))
+        if key not in groups:
+            groups[key] = []
+            order.append(key)
+        groups[key].append(p)
+    units = []
+    for key in order:
+        parts = groups[key]
+        if key[0] == "shp" and len(parts) > 1 and any(
+                x.name.lower().endswith(".shp") for x in parts):
+            units.append({"label": f"{key[2]}.shp (shapefile, "
+                                   f"{len(parts)} parts dropped together)",
+                          "paths": parts, "bundle_as": f"{key[2]}.zip"})
+        else:
+            for x in parts:
+                units.append({"label": x.name, "paths": [x],
+                              "bundle_as": None})
+    return units
+
+
+@app.post("/api/datasets/upload-paths")
+def upload_paths(body: _DropIngestRequest):
+    """Ingest files dropped on the app window, by path. Always answers
+    200 with {"results": [...]} — one entry per ingest unit:
+      {"status": "ok", ...dataset fields...}
+      {"status": "needs_choice", kind, options, detail, paths: [...]}
+        → re-POST the same paths with layer/sheet/table set to the pick.
+      {"status": "error", "source": label, "detail": student-readable}
+    A bad file in a batch is an error ENTRY, never a failed request, so
+    the rest of the drop still loads. (Auth failures still 401 via the
+    token middleware, before this handler runs.)"""
+    results = []
+    for unit in _drop_units(body.paths):
+        src = unit["label"]
+        try:
+            if unit["bundle_as"]:
+                buf = io.BytesIO()
+                with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
+                    for part in unit["paths"]:
+                        if not part.is_file():
+                            raise _DropError(
+                                f"Could not find \"{part.name}\" — it may "
+                                "have been moved or deleted after the drop.")
+                        z.write(part, arcname=part.name)
+                res = _ingest_bytes(buf.getvalue(), unit["bundle_as"],
+                                    layer=body.layer, sheet=body.sheet,
+                                    table=body.table)
+            else:
+                p = unit["paths"][0]
+                if p.is_dir():
+                    raise _DropError(
+                        f"\"{p.name}\" is a folder, and folders can't be "
+                        "loaded directly. Drop the files inside it, or zip "
+                        "the folder and drop the .zip instead.")
+                if not p.is_file():
+                    raise _DropError(
+                        f"Could not find \"{p.name}\" — it may have been "
+                        "moved or deleted after the drop.")
+                res = _ingest_bytes(p.read_bytes(), p.name,
+                                    layer=body.layer, sheet=body.sheet,
+                                    table=body.table)
+        except _DropError as de:
+            results.append({"status": "error", "source": src,
+                            "detail": str(de)})
+            continue
+        except HTTPException as he:
+            results.append({"status": "error", "source": src,
+                            "detail": str(he.detail)})
+            continue
+        except Exception as e:  # never let one file kill the whole drop
+            results.append({"status": "error", "source": src,
+                            "detail": str(e)})
+            continue
+        if isinstance(res, dict) and res.get("needs_choice"):
+            results.append({**res, "status": "needs_choice", "source": src,
+                            "paths": [str(x) for x in unit["paths"]]})
+        else:
+            results.append({**res, "status": "ok", "source": src})
+    return {"results": results}
+
 # ── Dataset management ────────────────────────────────────────────────────────
 
 @app.get("/api/health")
@@ -920,7 +1066,7 @@ def health():
                 "netcdf": HAS_NETCDF or HAS_XARRAY, "xarray": HAS_XARRAY,
                 "lidar": HAS_LASPY, "sklearn": HAS_SKLEARN, "pillow": HAS_PIL, "matplotlib": HAS_MPL,
                 "duckdb": HAS_DUCKDB},
-            "supported_formats": ["csv","tsv","txt","json","geojson","xlsx","xls","parquet",
+            "supported_formats": ["csv","tsv","txt","json","geojson","xlsx","xls","dta","parquet",
                 "shp","dbf","zip","gpkg","kml","kmz","gpx","gml","fgb","topojson",
                 "tif","tiff","geotiff","img","dem","hgt","asc",
                 "nc","nc4","cdf","grib","grib2","grb","grb2",

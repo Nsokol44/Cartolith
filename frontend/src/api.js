@@ -135,15 +135,22 @@ async function request(path, options = {}) {
 /**
  * Upload a file using XHR so we can track progress.
  * onProgress(pct: 0-100) called during upload.
+ * `params` carries the layer/sheet/table pick for a file that previously
+ * answered needs_choice — the endpoint reads those as QUERY params
+ * (pinned by a backend test; posted form fields are ignored).
  */
-export function uploadWithProgress(file, name, onProgress) {
+export function uploadWithProgress(file, name, onProgress, params) {
   return new Promise((resolve, reject) => {
     const fd = new FormData()
     fd.append('file', file)
     if (name) fd.append('name', name)
 
+    const qs = params
+      ? '?' + new URLSearchParams(
+          Object.entries(params).filter(([, v]) => v != null)).toString()
+      : ''
     const xhr = new XMLHttpRequest()
-    xhr.open('POST', BASE + '/api/datasets/upload')   // relative in dev/proxy, absolute under Tauri
+    xhr.open('POST', BASE + '/api/datasets/upload' + qs)   // relative in dev/proxy, absolute under Tauri
 
     xhr.upload.addEventListener('progress', (e) => {
       if (e.lengthComputable) onProgress?.(Math.round((e.loaded / e.total) * 100))
@@ -197,6 +204,29 @@ export function uploadWithProgress(file, name, onProgress) {
       })
       .catch(reject)
   })
+}
+
+/**
+ * Ingest files dropped onto the window. Tauri's native drag-drop handler
+ * delivers file PATHS, not File objects, so drops go to the path-ingest
+ * endpoint, which reads the files from disk and runs them through the
+ * same pipeline as uploadWithProgress. Resolves to the per-unit results
+ * array: each entry has status "ok" (plus dataset fields),
+ * "needs_choice" (plus kind/options/paths — re-call with opts set to the
+ * pick), or "error" (plus a student-readable detail). request() attaches
+ * the session token, as the endpoint requires.
+ */
+export function uploadPaths(paths, opts = {}) {
+  return request('/api/datasets/upload-paths', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      paths,
+      layer: opts.layer ?? null,
+      sheet: opts.sheet ?? null,
+      table: opts.table ?? null,
+    }),
+  }).then(d => d.results)
 }
 
 export const api = {

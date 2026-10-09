@@ -50,6 +50,8 @@ def sniff_format(content: bytes, filename: str = "") -> str:
     head = content[:8]
     if content[:15] == b"SQLite format 3":
         return "sqlite"          # GeoPackage and SpatiaLite are SQLite inside
+    if content[:11] == b"<stata_dta":
+        return "stata"           # Stata .dta, format 117+ (XML-style header)
     if head[:4] == b"GRIB":
         return "grib2"
     if head[:4] == b"LASF":
@@ -68,9 +70,9 @@ def sniff_format(content: bytes, filename: str = "") -> str:
         return "image"
     if ext in ("gpkg", "kml", "gpx", "gml", "topojson", "fgb", "geojson",
                "geojsons", "jsonl", "sqlite", "db", "grib", "grib2", "grb2",
-               "h5", "hdf5"):
+               "h5", "hdf5", "dta"):
         return {"h5": "netcdf", "hdf5": "netcdf", "grb2": "grib2",
-                "grib": "grib2", "db": "sqlite"}.get(ext, ext)
+                "grib": "grib2", "db": "sqlite", "dta": "stata"}.get(ext, ext)
     return ext or "unknown"
 
 
@@ -320,6 +322,16 @@ def read_table(content: bytes, filename: str, sheet: Optional[str] = None,
         if isinstance(data, list):
             return pd.DataFrame(data), {"format": "json"}
         return pd.json_normalize(data), {"format": "json"}
+    if ext == "dta" or fmt == "stata":
+        # Stata .dta (ACS/Census extracts are commonly shipped this way).
+        # pandas reads every Stata format version; no extra dependency.
+        # Value labels come through as the values themselves, variable
+        # labels are dropped — the columns keep their Stata names.
+        try:
+            df = pd.read_stata(io.BytesIO(content))
+        except Exception as e:
+            raise ParseFailure(friendly_error("stata", e)) from e
+        return df, {"format": "stata"}
     # csv / tsv / txt / dat / unknown text
     sep = "\t" if ext == "tsv" else None
     try:
@@ -559,6 +571,9 @@ _HINTS = {
            "FlatGeobuf, NetCDF, GeoTIFF, LAS/LAZ, CSV.",
     "sqlite": "SQLite/GeoPackage databases load layer-by-layer; pick one with "
               "?layer=<name> for vector layers or ?table=<name> for tables.",
+    "stata": "This is a Stata .dta file. If it will not read, it may be "
+             "corrupt or from a very old Stata version — re-export it from "
+             "Stata (or save as CSV) and try again.",
 }
 
 

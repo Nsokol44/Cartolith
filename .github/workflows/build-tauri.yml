@@ -77,6 +77,23 @@ jobs:
           npm ci
           npm run build
 
+      - name: Verify the built frontend carries the upload token fix
+        shell: bash
+        working-directory: frontend
+        run: |
+          # The v1.5.1 regression (every upload 401ing in the shipped
+          # app) came from the upload XHR not sending X-Cartolith-Token.
+          # The bundle is the single source of truth for what the app
+          # serves (Tauri embeds frontend/dist; the backend serves no
+          # static frontend), so fail the release build if the bundle we
+          # are about to embed lacks the token header — a stale or
+          # regressed frontend can then never ship silently.
+          if ! grep -rq "X-Cartolith-Token" dist/assets/; then
+            echo "::error::Built frontend bundle lacks the X-Cartolith-Token upload fix — refusing to package it."
+            exit 1
+          fi
+          echo "Frontend bundle verified: X-Cartolith-Token present."
+
       - name: Install Python dependencies
         run: |
           python -m pip install --upgrade pip

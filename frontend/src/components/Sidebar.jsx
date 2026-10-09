@@ -1,6 +1,7 @@
 import { useRef, useState } from "react"
 import { useApp } from "../store"
 import { api, uploadWithProgress, projectApi, loadUrlApi } from "../api"
+import { planBrowserFiles } from "../dropingest"
 import { useSampleLoader } from "./Learn"
 import Pipeline from "./Pipeline"
 
@@ -82,54 +83,64 @@ export default function Sidebar() {
     }catch(err){ alert(`Re-run failed:\n${err.message?.split("\n")[0]}`) }
   }
 
-  const SHP_PART_EXTS=new Set(["shp","shx","dbf","prj","cpg","qix","sbn","sbx","shp.xml"])
+  // Failed uploads keep their REASON here until dismissed — the backend
+  // returns actionable errors ("unsupported format", "no .prj, assumed
+  // WGS84", …) and the old UI threw them away behind a bare "failed"
+  // badge and a transient alert.
+  const [uploadErrors,setUploadErrors]=useState({})
+  // Files that parsed but hold several layers/sheets/tables: the backend
+  // answers needs_choice instead of guessing; the pick re-uploads with
+  // the choice as a query param (the endpoint's pinned contract).
+  const [pendingChoices,setPendingChoices]=useState({})
+
+  async function uploadOne(file,params){
+    setUploading(u=>({...u,[file.name]:0}))
+    try{
+      const result=await uploadWithProgress(file,file.name,pct=>{
+        setUploading(u=>({...u,[file.name]:pct<100?pct:"parsing"}))
+      },params)
+      setUploading(u=>{const n={...u};delete n[file.name];return n})
+      if(result.needs_choice){
+        setPendingChoices(c=>({...c,[file.name]:{file,kind:result.kind,
+          options:result.options||[],detail:result.detail||""}}))
+        return
+      }
+      dispatch({type:"ADD_DATASET",dataset:result})
+    }catch(err){
+      setUploading(u=>{const n={...u};delete n[file.name];return n})
+      setUploadErrors(er=>({...er,[file.name]:
+        err.message?.split("\n\n")[0]||"Upload failed."}))
+    }
+  }
+
+  async function pickChoice(name,option){
+    const ch=pendingChoices[name]; if(!ch) return
+    setPendingChoices(c=>{const n={...c};delete n[name];return n})
+    await uploadOne(ch.file,{[ch.kind]:option})
+  }
 
   async function handleFiles(e){
     const picked=Array.from(e.target.files)
+    e.target.value=""
     // A shapefile is a set of parts (.shp + .shx + .dbf + …) that only
     // makes sense together, but the upload endpoint takes one file per
     // request — parts sent one-by-one arrive as unrelated fragments (a
-    // bare .shp has no attributes). Bundle each shapefile's parts into a
-    // single .zip client-side and upload that; the backend's zip path
-    // reassembles them.
-    const groups=new Map(); const singles=[]
-    for(const f of picked){
-      const lower=f.name.toLowerCase()
-      const dot=f.name.lastIndexOf(".")
-      const ext=dot>=0?f.name.slice(dot+1).toLowerCase():""
-      const base=lower.endsWith(".shp.xml")?lower.slice(0,-8)
-        :(dot>=0?lower.slice(0,dot):lower)
-      if(SHP_PART_EXTS.has(ext)||lower.endsWith(".shp.xml")){
-        if(!groups.has(base))groups.set(base,[])
-        groups.get(base).push(f)
-      } else singles.push(f)
-    }
-    const files=[...singles]
-    for(const [base,parts] of groups){
-      const hasShp=parts.some(f=>f.name.toLowerCase().endsWith(".shp"))
-      if(hasShp&&parts.length>1){
+    // bare .shp has no attributes). planBrowserFiles groups each
+    // shapefile's parts; bundle them into a single .zip client-side and
+    // upload that; the backend's zip path reassembles them.
+    const plan=planBrowserFiles(picked.map(f=>f.name))
+    const files=[]
+    for(const step of plan){
+      if(step.type==="bundle"){
+        const parts=step.indices.map(i=>picked[i])
         try{
           const {zipStore}=await import("../zipstore")
           const blob=await zipStore(parts.map(f=>({name:f.name,blob:f})))
-          files.push(new File([blob],`${base}.zip`,{type:"application/zip"}))
+          files.push(new File([blob],`${step.base}.zip`,{type:"application/zip"}))
         }catch{ files.push(...parts) }
-      } else files.push(...parts)
+      } else files.push(picked[step.index])
     }
-    for(const file of files){
-      setUploading(u=>({...u,[file.name]:0}))
-      try{
-        const result=await uploadWithProgress(file,file.name,pct=>{
-          setUploading(u=>({...u,[file.name]:pct<100?pct:"parsing"}))
-        })
-        dispatch({type:"ADD_DATASET",dataset:result})
-        setUploading(u=>{const n={...u};delete n[file.name];return n})
-      }catch(err){
-        setUploading(u=>({...u,[file.name]:"error"}))
-        alert(`Failed to load "${file.name}":\n\n${err.message.split("\n\n")[0]}`)
-        setTimeout(()=>setUploading(u=>{const n={...u};delete n[file.name];return n}),3000)
-      }
-    }
-    e.target.value=""
+    for(const file of files) await uploadOne(file)
   }
 
   async function handleDelete(id){
@@ -170,12 +181,13 @@ export default function Sidebar() {
         {projMsg&&<div style={{fontSize:10,color:"var(--accent2)",marginBottom:8,lineHeight:1.4}}>{projMsg}</div>}
         {showPipeline&&<Pipeline open={showPipeline} onClose={()=>setShowPipeline(false)}/>}
         <input ref={fileRef} type="file" multiple style={{display:"none"}}
-          accept=".csv,.tsv,.json,.geojson,.xlsx,.xls,.parquet,.shp,.dbf,.zip,.tif,.tiff,.geotiff,.img,.dem,.hgt,.asc,.nc,.nc4,.cdf,.las,.laz,.png,.jpg,.jpeg,.bmp,.kml,.kmz,.gpkg,.gpx,.gml,.fgb,.topojson,.grib,.grib2,.grb,.grb2,.jsonl,.geojsons"
+          accept=".csv,.tsv,.json,.geojson,.xlsx,.xls,.dta,.parquet,.shp,.dbf,.zip,.tif,.tiff,.geotiff,.img,.dem,.hgt,.asc,.nc,.nc4,.cdf,.las,.laz,.png,.jpg,.jpeg,.bmp,.kml,.kmz,.gpkg,.gpx,.gml,.fgb,.topojson,.grib,.grib2,.grb,.grb2,.jsonl,.geojsons"
           onChange={handleFiles}/>
         {datasets.length===0?(
           <div style={{padding:"14px 0",textAlign:"center"}}>
             <div style={{fontSize:22,opacity:0.25,marginBottom:8}}>◈</div>
-            <div style={{fontSize:11,color:"var(--txt3)",lineHeight:1.7}}>CSV · TSV · JSON · GeoJSON<br/>SHP · DBF · ZIP (shapefiles)<br/>KML · KMZ · GeoPackage · GPX<br/>TIF · GeoTIFF · DEM · HGT<br/>NetCDF · GRIB2<br/>LAS · LAZ (LiDAR)<br/>PNG · JPG</div>
+            <div style={{fontSize:11,color:"var(--txt3)",lineHeight:1.7}}>CSV · TSV · JSON · GeoJSON<br/>Excel · Stata (.dta) · Parquet<br/>SHP · DBF · ZIP (shapefiles)<br/>KML · KMZ · GeoPackage · GPX<br/>TIF · GeoTIFF · DEM · HGT<br/>NetCDF · GRIB2<br/>LAS · LAZ (LiDAR)<br/>PNG · JPG</div>
+            <div style={{fontSize:10,color:"var(--txt3)",marginTop:8}}>…or drag &amp; drop files anywhere in the window</div>
             <button className="btn sm" style={{marginTop:10,width:"100%"}} onClick={()=>fileRef.current.click()}>Browse files</button>
             <button className="btn sm primary" style={{marginTop:6,width:"100%"}} disabled={sample.loading} onClick={()=>sample.load("both")}>{sample.loading?"Loading…":"✦ Try sample data"}</button>
             {sample.err&&<div style={{fontSize:10,color:"var(--accent4)",marginTop:6,lineHeight:1.5}}>{sample.err}</div>}
@@ -199,6 +211,11 @@ export default function Sidebar() {
                     {ds.derived && <span title={ds.derived.detail||"Derived dataset"} style={{fontSize:8.5,fontWeight:600,padding:"0px 5px",borderRadius:3,background:"rgba(129,140,248,0.14)",color:"var(--accent2)",fontFamily:"var(--font-mono)",whiteSpace:"nowrap"}}>⤳ {ds.derived.op}</span>}
                     {ds.sample && <span title="Sample dataset" style={{fontSize:8.5,fontWeight:600,padding:"0px 5px",borderRadius:3,background:"rgba(56,189,248,0.14)",color:"var(--accent5)",fontFamily:"var(--font-mono)"}}>sample</span>}
                   </div>
+                  {(ds.zip_note||ds.geometry_note)&&(
+                    <div title={ds.zip_note||ds.geometry_note} style={{fontSize:9.5,color:"var(--txt3)",marginTop:3,lineHeight:1.4,display:"-webkit-box",WebkitLineClamp:2,WebkitBoxOrient:"vertical",overflow:"hidden"}}>
+                      {ds.zip_note||ds.geometry_note}
+                    </div>
+                  )}
                 </div>
               )
             })}
@@ -206,14 +223,35 @@ export default function Sidebar() {
           </div>
         )}
         {Object.entries(uploading).map(([name,st])=>(
-          <div key={name} style={{marginTop:4,padding:"7px 10px",background:st==="error"?"rgba(251,113,133,0.08)":"var(--bg3)",border:`1px solid ${st==="error"?"rgba(251,113,133,0.25)":"var(--bdr)"}`,borderRadius:"var(--r)"}}>
+          <div key={name} style={{marginTop:4,padding:"7px 10px",background:"var(--bg3)",border:"1px solid var(--bdr)",borderRadius:"var(--r)"}}>
             <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:5}}>
-              <span style={{fontSize:11,color:st==="error"?"var(--accent4)":"var(--txt2)",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",flex:1}} title={name}>{name}</span>
-              <span style={{fontSize:10,fontFamily:"var(--font-mono)",color:"var(--txt3)",flexShrink:0,marginLeft:6}}>{st==="error"?"✗ failed":st==="parsing"?"parsing…":`${st}%`}</span>
+              <span style={{fontSize:11,color:"var(--txt2)",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",flex:1}} title={name}>{name}</span>
+              <span style={{fontSize:10,fontFamily:"var(--font-mono)",color:"var(--txt3)",flexShrink:0,marginLeft:6}}>{st==="parsing"?"parsing…":`${st}%`}</span>
             </div>
-            {st!=="error"&&<div style={{height:3,background:"var(--bg4)",borderRadius:2,overflow:"hidden"}}>
+            <div style={{height:3,background:"var(--bg4)",borderRadius:2,overflow:"hidden"}}>
               <div style={{height:"100%",borderRadius:2,background:st==="parsing"?"var(--accent3)":"var(--accent)",width:st==="parsing"?"100%":`${st}%`,transition:st==="parsing"?"none":"width 0.2s ease",animation:st==="parsing"?"pulse 1.2s ease-in-out infinite":"none"}}/>
-            </div>}
+            </div>
+          </div>
+        ))}
+        {Object.entries(pendingChoices).map(([name,ch])=>(
+          <div key={name} style={{marginTop:4,padding:"7px 10px",background:"var(--bg3)",border:"1px solid rgba(129,140,248,0.35)",borderRadius:"var(--r)"}}>
+            <div style={{fontSize:11,color:"var(--txt)",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}} title={name}>{name}</div>
+            <div style={{fontSize:10,color:"var(--txt3)",marginTop:2,lineHeight:1.45}}>{ch.detail||`This file has several ${ch.kind}s — which one?`}</div>
+            <div style={{display:"flex",flexWrap:"wrap",gap:4,marginTop:6}}>
+              {ch.options.map(opt=>(
+                <button key={String(opt)} className="btn sm" onClick={()=>pickChoice(name,opt)}>{String(opt)}</button>
+              ))}
+              <button className="btn sm ghost" onClick={()=>setPendingChoices(c=>{const n={...c};delete n[name];return n})}>skip</button>
+            </div>
+          </div>
+        ))}
+        {Object.entries(uploadErrors).map(([name,msg])=>(
+          <div key={name} style={{marginTop:4,padding:"7px 10px",background:"rgba(251,113,133,0.08)",border:"1px solid rgba(251,113,133,0.25)",borderRadius:"var(--r)"}}>
+            <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",gap:4}}>
+              <span style={{fontSize:11,color:"var(--accent4)",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",flex:1}} title={name}>✗ {name}</span>
+              <button className="btn ghost icon sm" onClick={()=>setUploadErrors(er=>{const n={...er};delete n[name];return n})} style={{flexShrink:0,width:18,height:18,fontSize:13,padding:0}}>×</button>
+            </div>
+            <div style={{fontSize:10.5,color:"var(--txt2)",marginTop:3,lineHeight:1.5,whiteSpace:"pre-wrap",maxHeight:110,overflowY:"auto"}}>{msg}</div>
           </div>
         ))}
       </div>

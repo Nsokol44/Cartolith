@@ -5,6 +5,7 @@ import NotebookTab from "./components/NotebookTab"
 import { api } from "./api"
 import Topbar from "./components/Topbar"
 import Sidebar from "./components/Sidebar"
+import DropIngest from "./components/DropIngest"
 import ExploreTab from "./components/ExploreTab"
 import StatisticsTab from "./components/StatisticsTab"
 import VisualizeTab from "./components/VisualizeTab"
@@ -119,6 +120,7 @@ function AppInner() {
           setActiveTab={setActiveTab}
         />
       </div>
+      <DropIngest />
       <LearnDrawer open={learnOpen} onClose={() => setLearnOpen(false)} onLoadSample={() => sample.load("both")} />
       {showWelcome && <Welcome onClose={() => setWelcomeDismissed(true)} onLoadSample={welcomeLoad} loading={sample.loading} />}
     </div>

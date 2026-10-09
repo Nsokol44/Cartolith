@@ -182,6 +182,56 @@ def test_detect_geometry_wraps_0360_longitudes():
     assert "0–360" in note
 
 
+# ── Stata .dta (the v1.5.2 classroom failure: ACS extracts) ────────────
+
+def _dta_bytes(df):
+    buf = io.BytesIO()
+    # write_index=False: a real Stata-written .dta has no pandas index
+    # column, and the fixture should look like the classroom files.
+    df.to_stata(buf, write_index=False)
+    return buf.getvalue()
+
+
+def test_upload_dta_with_latlon_becomes_points():
+    content = _dta_bytes(pd.DataFrame(
+        {"tract": ["001", "002"], "lat": [35.9, 36.0], "lon": [-83.9, -84.0],
+         "medinc": [52000, 61000]}))
+    r = _upload(content, "acs_latlon.dta")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["geo_meta"]["feature_count"] == 2
+    assert body["load_meta"]["format"] == "stata"
+
+
+def test_upload_dta_attribute_only_loads_as_table_with_note():
+    content = _dta_bytes(pd.DataFrame(
+        {"county": ["Knox", "Blount"], "pop": [470000, 130000]}))
+    r = _upload(content, "acs_counts.dta")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["shape"] == [2, 2]
+    assert "No coordinate columns" in body["geometry_note"]
+
+
+def test_upload_multisheet_choice_comes_from_query_param():
+    # The layer/sheet/table params on the multipart endpoint are QUERY
+    # params (pinned empirically — posted form fields are ignored). The
+    # frontend's choice re-upload depends on this contract.
+    buf = io.BytesIO()
+    with pd.ExcelWriter(buf, engine="openpyxl") as w:
+        pd.DataFrame({"name": ["a"], "lat": [35.9],
+                      "lon": [-83.9]}).to_excel(w, sheet_name="One",
+                                                index=False)
+        pd.DataFrame({"name": ["a", "b", "c"], "lat": [35.9, 36.0, 36.1],
+                      "lon": [-83.9, -84.0, -84.1]}).to_excel(
+                          w, sheet_name="Two", index=False)
+    r = client.post("/api/datasets/upload",
+                    files={"file": ("book_q.xlsx", buf.getvalue())},
+                    params={"sheet": "Two"}, headers=TOKEN)
+    assert r.status_code == 200
+    assert r.json()["shape"] == [3, 3]
+
+
 # ── KML fallback reader (GDAL KML drivers are build-dependent) ──────────
 
 KML = """<?xml version="1.0" encoding="UTF-8"?>
