@@ -87,7 +87,7 @@ try:
 except ImportError as e:
     HAS_DUCKDB = False; print(f"[startup] duckdb unavailable: {e}")
 
-app = FastAPI(title="Cartolith API", version="1.5.2")
+app = FastAPI(title="Cartolith API", version="1.5.3")
 
 # ── Local-only security ─────────────────────────────────────────────────────
 # Threat model: this backend runs on a student's own machine, bound to
@@ -1060,7 +1060,7 @@ def upload_paths(body: _DropIngestRequest):
 
 @app.get("/api/health")
 def health():
-    return {"status": "ok", "version": "1.5.2",
+    return {"status": "ok", "version": "1.5.3",
             "capabilities": {"scipy": HAS_SCIPY, "statsmodels": HAS_STATSMODELS,
                 "geopandas": HAS_GEOPANDAS, "rasterio": HAS_RASTERIO,
                 "netcdf": HAS_NETCDF or HAS_XARRAY, "xarray": HAS_XARRAY,

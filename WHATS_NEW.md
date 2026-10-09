@@ -1,5 +1,23 @@
 # Cartolith — What's New
 
+## v1.5.3 (October 2026)
+
+- **Drag-and-drop loading:** drag files straight onto the Cartolith window
+  and they load — including shapefile parts dropped together, which are
+  grouped as one dataset just like the file picker. One bad file in a batch
+  reports its own error; the rest still load.
+- **Stata .dta support:** ACS-style Stata files now load through the table
+  reader, with coordinates picked up when the file has them.
+- **Real error messages:** failed loads now show the actual reason in the
+  sidebar instead of a bare "failed", and attribute-only tables say plainly
+  that they loaded as a data table rather than a map layer.
+- **Multi-layer and multi-sheet files fixed:** GeoPackage layers and Excel
+  sheets now present their picker properly — no more corrupt phantom
+  dataset entries.
+- Release builds now verify the shipped bundle carries the upload fix, so a
+  stale frontend cannot ship silently again.
+- The suite is 110 passing, 1 expected failure.
+
 ## v1.5.2 (October 2026)
 
 - **Data loading fixed end-to-end:** the desktop upload path now sends the
